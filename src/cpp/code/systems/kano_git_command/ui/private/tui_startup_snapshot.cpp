@@ -101,6 +101,23 @@ auto ReadRequiredBoolean(
     return true;
 }
 
+auto Utf8PathText(const std::filesystem::path& InPath) -> std::string {
+#if defined(_WIN32)
+    const auto value = InPath.generic_u8string();
+    return {value.begin(), value.end()};
+#else
+    return InPath.generic_string();
+#endif
+}
+
+auto Utf8Path(const std::string_view InPath) -> std::filesystem::path {
+#if defined(_WIN32)
+    return std::filesystem::u8path(InPath);
+#else
+    return std::filesystem::path(InPath);
+#endif
+}
+
 auto NormalizeRoot(const std::filesystem::path& InWorkspaceRoot)
     -> std::filesystem::path {
     const auto absolute = InWorkspaceRoot.is_absolute()
@@ -146,8 +163,8 @@ auto InferLexicalParents(
                     InOutRows[childIndex].path)) {
                 continue;
             }
-            const auto candidateLength = InOutRows[candidateIndex]
-                .path.generic_string().size();
+            const auto candidateLength = Utf8PathText(
+                InOutRows[candidateIndex].path).size();
             if (candidateLength > bestParentLength) {
                 bestParentLength = candidateLength;
                 InOutRows[childIndex].parentPath =
@@ -381,7 +398,7 @@ auto ParseTuiStartupSnapshotJson(
                 "startup inventory external root is empty, oversized, or contains NUL");
             return {};
         }
-        const auto path = std::filesystem::path(text);
+        const auto path = Utf8Path(text);
         if (!path.is_absolute()) {
             SetError(
                 OutError,
@@ -390,7 +407,7 @@ auto ParseTuiStartupSnapshotJson(
         }
         const auto normalized = path.lexically_normal();
         if (!seenExternalRoots.insert(
-                normalized.generic_string()).second) {
+                Utf8PathText(normalized)).second) {
             SetError(
                 OutError,
                 "startup inventory contains a duplicate external root");
@@ -472,7 +489,7 @@ auto ParseTuiStartupSnapshotJson(
             return {};
         }
 
-        const auto path = std::filesystem::path(pathText);
+        const auto path = Utf8Path(pathText);
         if (!path.is_absolute()) {
             SetError(OutError,
                 "startup inventory paths must be absolute");
@@ -493,7 +510,7 @@ auto ParseTuiStartupSnapshotJson(
                 "startup inventory path escapes the workspace and configured external roots");
             return {};
         }
-        if (!seenPaths.insert(normalizedPath.generic_string()).second) {
+        if (!seenPaths.insert(Utf8PathText(normalizedPath)).second) {
             SetError(OutError,
                 "startup inventory contains a duplicate repository path");
             return {};
@@ -504,7 +521,7 @@ auto ParseTuiStartupSnapshotJson(
         const auto relative = normalizedPath.lexically_relative(root);
         row.relativePath = relative.empty() || relative == "."
             ? "."
-            : relative.generic_string();
+            : Utf8PathText(relative);
         row.type = std::move(type);
         row.branch = branch.empty() ? "(detached)" : std::move(branch);
         row.tracking = std::move(tracking);
@@ -552,7 +569,7 @@ auto LoadTuiStartupSnapshot(
             "--inventory-only",
             "--root-fallback",
             "--repo-root",
-            root.generic_string(),
+            Utf8PathText(root),
         },
         shell::ExecMode::Capture,
         root,

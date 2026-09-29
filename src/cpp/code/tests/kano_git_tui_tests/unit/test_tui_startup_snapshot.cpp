@@ -26,6 +26,15 @@ auto FixtureWorkspaceRoot() -> std::filesystem::path {
     return FixtureAbsolutePath("workspace");
 }
 
+auto Utf8PathTextForTest(const std::filesystem::path& InPath) -> std::string {
+#if defined(_WIN32)
+    const auto value = InPath.generic_u8string();
+    return {value.begin(), value.end()};
+#else
+    return InPath.generic_string();
+#endif
+}
+
 auto QuoteJson(const std::string_view InValue) -> std::string {
     static constexpr char kHexDigits[] = "0123456789abcdef";
     std::string out{"\""};
@@ -98,7 +107,7 @@ auto RepoJson(
     const std::string_view InDirtyJson = "false",
     const bool bInWorktreeDirty = false) -> std::string {
     return RepoJsonWithQuotedPath(
-        QuoteJson(InPath.generic_string()),
+        QuoteJson(Utf8PathTextForTest(InPath)),
         InType,
         InBranch,
         InTracking,
@@ -198,6 +207,34 @@ TEST_CASE(
     CHECK(rows[1].branch == "release");
     CHECK_FALSE(rows[1].repoDirty);
     CHECK(rows[1].worktreeDirty);
+}
+
+TEST_CASE(
+    "KOG-BUG-0109 TUI startup snapshot preserves Unicode repository paths",
+    "[unit][tui_startup_snapshot][unicode][windows][cross-platform][KOG-BUG-0109]") {
+    const auto root = FixtureWorkspaceRoot();
+    const std::string repositoryToken =
+        std::string{"\xE6\xB8\xAC\xE8\xA9\xA6"} + "-a" +
+        std::string{"\xCC\x84"} + "-" +
+        std::string{"\xF0\x9F\xAA\x90"};
+    const auto child =
+        (root / std::filesystem::u8path(repositoryToken)).lexically_normal();
+    const auto payload = ValidSnapshotWithRepos(
+        "[" + RepoJson(root, "root") + "," +
+        RepoJson(child, "registered") + "]");
+
+    std::string error;
+    const auto rows = ParseTuiStartupSnapshotJson(
+        payload,
+        root,
+        &error);
+
+    REQUIRE(error.empty());
+    REQUIRE(rows.size() == 2U);
+    REQUIRE(rows[1].path == child);
+    REQUIRE(rows[1].parentPath == root);
+    REQUIRE(rows[1].relativePath == repositoryToken);
+    REQUIRE(Utf8PathTextForTest(rows[1].path).ends_with(repositoryToken));
 }
 
 TEST_CASE(

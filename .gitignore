@@ -1,5 +1,10 @@
 # >>> STATIC-GITIGNORE
 
+# Windows reserved device names that are reported by `git status` but cannot
+# actually exist on disk.
+nul
+NUL
+
 __pycache__/
 .cache/
 .DS_Store

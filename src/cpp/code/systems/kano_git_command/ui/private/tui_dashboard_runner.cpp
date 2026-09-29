@@ -6,6 +6,7 @@
 #include "tui_audit_frame.hpp"
 #include "tui_audit_surface.hpp"
 #include "tui_command_scope.hpp"
+#include "tui_display_cells.hpp"
 #include "tui_history_lifecycle.hpp"
 #include "tui_history_patch.hpp"
 #include "tui_keymap.hpp"
@@ -391,8 +392,6 @@ auto FormatTuiAuditVerificationPreview(
 }
 
 auto HasDirtyHistoryEntry(const RepoView& InRepo) -> bool;
-auto BuildHistoryDisplayLine(const RepoHistoryCache::HistoryEntry& InEntry,
-                             const std::string& InAuthorText = std::string()) -> std::string;
 auto BuildHistoryDetailOverlay(const std::filesystem::path& repo,
                                const RepoView& repoView,
                                const RepoHistoryCache::HistoryEntry& entry,
@@ -464,9 +463,18 @@ auto MakeTuiDecorator(const TuiTextStyle& InStyle) -> ftxui::Decorator {
 
 auto ResolveKanoGitBinaryCommand() -> std::string {
     if (const char* binaryPath = std::getenv("KANO_GIT_BINARY_PATH"); binaryPath != nullptr) {
+#if defined(_WIN32)
+        const auto p = std::filesystem::u8path(binaryPath);
+#else
         const std::filesystem::path p(binaryPath);
+#endif
         if (std::filesystem::exists(p)) {
+#if defined(_WIN32)
+            const auto value = p.generic_u8string();
+            return {value.begin(), value.end()};
+#else
             return p.generic_string();
+#endif
         }
     }
 #if defined(_WIN32)
@@ -485,6 +493,23 @@ auto Trim(std::string InValue) -> std::string {
         start += 1;
     }
     return InValue.substr(start);
+}
+
+auto Utf8PathText(const std::filesystem::path& InPath) -> std::string {
+#if defined(_WIN32)
+    const auto value = InPath.generic_u8string();
+    return {value.begin(), value.end()};
+#else
+    return InPath.generic_string();
+#endif
+}
+
+auto Utf8Path(const std::string_view InPath) -> std::filesystem::path {
+#if defined(_WIN32)
+    return std::filesystem::u8path(InPath);
+#else
+    return std::filesystem::path(InPath);
+#endif
 }
 
 auto RelativeDisplayPath(const std::filesystem::path& InRoot, const std::filesystem::path& InPath) -> std::filesystem::path {
@@ -507,16 +532,17 @@ auto DisplayRepoPath(const std::filesystem::path& InRoot, const std::filesystem:
     }
     const auto normalizedPath = InPath.lexically_normal();
     if (normalizedPath == normalizedRoot) {
-        return normalizedPath.generic_string();
+        return TuiDisplaySanitize(Utf8PathText(normalizedPath));
     }
-    return RelativeDisplayPath(normalizedRoot, normalizedPath).generic_string();
+    return TuiDisplaySanitize(
+        Utf8PathText(RelativeDisplayPath(normalizedRoot, normalizedPath)));
 }
 
 auto DisplayParentRepo(const std::filesystem::path& InRoot, const std::string& InParentRepo) -> std::string {
     if (InParentRepo == "(none)") {
         return InParentRepo;
     }
-    return DisplayRepoPath(InRoot, std::filesystem::path(InParentRepo));
+    return DisplayRepoPath(InRoot, Utf8Path(InParentRepo));
 }
 
 auto CachedRepoIdentityKey(const RepoView& InRepo) -> std::string {
@@ -547,11 +573,9 @@ auto WithSnapshotTag(const std::string& InValue, const bool InFromSnapshot) -> s
 }
 
 auto AbbreviateFront(const std::string& InValue, const std::size_t InMaxWidth) -> std::string {
-    if (InValue.size() <= InMaxWidth || InMaxWidth <= 3) {
-        return InValue;
-    }
-    const std::size_t tail = InMaxWidth - 3;
-    return "..." + InValue.substr(InValue.size() - tail);
+    return TuiDisplayTruncateFront(
+        InValue,
+        static_cast<int>(InMaxWidth));
 }
 
 auto TryParseNonNegativeInt(const std::string& InValue) -> std::optional<int> {
@@ -624,23 +648,25 @@ enum class DetailLabelMode {
 
 auto DetailLine(const DetailLabelMode InMode,
                 const std::string& InFullLabel,
-                const std::string& InShortLabel,
-                const std::string& InValue) -> std::string {
+    const std::string& InShortLabel,
+    const std::string& InValue) -> std::string {
     if (InMode == DetailLabelMode::Bare) {
-        return InValue;
+        return TuiDisplaySanitize(InValue);
     }
-    return (InMode == DetailLabelMode::Full ? InFullLabel : InShortLabel) + ": " + InValue;
+    return TuiDisplaySanitize(
+        (InMode == DetailLabelMode::Full ? InFullLabel : InShortLabel) +
+        ": " + InValue);
 }
 
 auto ChooseDetailLabelMode(const int InAvailableWidth,
                            const std::vector<std::string>& InFullLines,
                            const std::vector<std::string>& InShortLines) -> DetailLabelMode {
     auto longest = [](const std::vector<std::string>& lines) {
-        std::size_t width = 0;
+        int width = 0;
         for (const auto& line : lines) {
-            width = std::max(width, line.size());
+            width = std::max(width, TuiDisplayWidth(line));
         }
-        return static_cast<int>(width);
+        return width;
     };
 
     const int safeWidth = std::max(0, InAvailableWidth - 2);
@@ -952,11 +978,10 @@ auto ResolveRepoParent(const std::filesystem::path& InWorkspaceRoot,
             normalizedDepString.size() > bestParent.path.size()) {
             bestParent.path = normalizedDepString;
             bestParent.identityKey = canonicalDepStr;
-            bestParent.relativePath =
+            bestParent.relativePath = Utf8PathText(
                 ResolveRepoRelativePath(
                     normalizedDep,
-                    normalizedRepoPath)
-                    .generic_string();
+                    normalizedRepoPath));
         }
     }
     return bestParent;
@@ -1121,9 +1146,9 @@ auto LoadStartupRepoViews(
             row.parentRepo =
                 NormalizeRepoIdentityKey(repo.parentPath);
             row.parentIdentityKey = row.parentRepo;
-            row.parentRelativePath = row.path
-                .lexically_relative(repo.parentPath)
-                .generic_string();
+            row.parentRelativePath = Utf8PathText(
+                row.path.lexically_relative(
+                    repo.parentPath));
         }
         row.statusFromSnapshot = true;
         row.statusKnown = repo.statusKnown;
@@ -1214,7 +1239,7 @@ auto RefreshTuiDirtyFilterStatus(
             if (topLevel.exitCode != 0 ||
                 ResolveStableRepoIdentityKey(repoPath) !=
                     ResolveStableRepoIdentityKey(
-                        std::filesystem::path(Trim(topLevel.stdoutStr)))) {
+                        Utf8Path(Trim(topLevel.stdoutStr)))) {
                 repo.type = "registered-uninit";
                 repo.currentBranch.clear();
                 repo.hasChanges = false;
@@ -1418,7 +1443,7 @@ auto DiscoverRepoViews(const bool InDirtyOnly,
                 if (topLevel.exitCode != 0 ||
                     ResolveStableRepoIdentityKey(normalizedRepoPath) !=
                         ResolveStableRepoIdentityKey(
-                            std::filesystem::path(Trim(topLevel.stdoutStr)))) {
+                            Utf8Path(Trim(topLevel.stdoutStr)))) {
                     row.type = "registered-uninit";
                     row.branch = "(uninit)";
                     row.upstream.clear();
@@ -1529,7 +1554,7 @@ auto DiscoverRepoViews(const bool InDirtyOnly,
                 if (topLevel.exitCode != 0 ||
                     ResolveStableRepoIdentityKey(normalizedRepoPath) !=
                         ResolveStableRepoIdentityKey(
-                            std::filesystem::path(Trim(topLevel.stdoutStr)))) {
+                            Utf8Path(Trim(topLevel.stdoutStr)))) {
                     row.type = "registered-uninit";
                     row.branch = "(uninit)";
                     row.upstream.clear();
@@ -1597,7 +1622,7 @@ auto BuildLiveRepoView(const std::filesystem::path& InWorkspaceRoot,
         if (topLevel.exitCode != 0 ||
             row.identityKey !=
                 ResolveStableRepoIdentityKey(
-                    std::filesystem::path(Trim(topLevel.stdoutStr)))) {
+                    Utf8Path(Trim(topLevel.stdoutStr)))) {
             row.type = "registered-uninit";
             row.branch = "(uninit)";
             row.upstream.clear();
@@ -1651,29 +1676,17 @@ auto ComputeDiscoverPageSize() -> int {
 }
 
 auto ComputeHistoryRowWidthEstimate() -> int {
-    constexpr int kHistoryLeftPanelWidth = 22;
-    constexpr int kApproxChromeWidth = 12;
-    return std::max(24, ftxui::Terminal::Size().dimx - kHistoryLeftPanelWidth - kApproxChromeWidth);
+    const auto terminalSize = ftxui::Terminal::Size();
+    const auto geometry = ComputeTuiAuditDashboardGeometry(
+        terminalSize.dimx,
+        terminalSize.dimy,
+        false);
+    const int chromeWidth = geometry.repositoryPaneCollapsed ? 4 : 34;
+    return std::max(24, terminalSize.dimx - chromeWidth);
 }
 
 auto HasDirtyHistoryEntry(const RepoView& InRepo) -> bool {
     return InRepo.repoDirty || InRepo.worktreeDirty || !InRepo.dirtyFiles.empty();
-}
-
-auto BuildHistoryDisplayLine(const RepoHistoryCache::HistoryEntry& InEntry, const std::string& InAuthorText) -> std::string {
-    const std::string indexText = InEntry.totalCount > 0
-        ? std::to_string(InEntry.globalIndex) + "/" + std::to_string(InEntry.totalCount)
-        : std::to_string(InEntry.globalIndex) + "/?";
-    std::string line = "[" + indexText + "] ";
-    if (InEntry.isDirtyWorkingTree) {
-        line += "(dirty) dirty working tree";
-    } else {
-        line += InEntry.sha + " " + InEntry.subject;
-    }
-    if (!InAuthorText.empty()) {
-        line += " | " + InAuthorText;
-    }
-    return line;
 }
 
 auto CommitShaFromOneline(const std::string& line) -> std::string {
@@ -2035,7 +2048,7 @@ auto BuildCommitPreview(const std::filesystem::path& repo) -> std::string {
     const auto data = CollectPreviewData(repo);
     std::ostringstream out;
     out << "Commit Preview\n";
-    out << "repo: " << repo.lexically_normal().generic_string() << "\n";
+    out << "repo: " << Utf8PathText(repo.lexically_normal()) << "\n";
     out << "branch: " << data.branch << "\n\n";
     if (data.statusIncomplete) {
         out << "WARNING: status output was incomplete; this preview is not safe for mutation confirmation.\n\n";
@@ -2074,7 +2087,7 @@ auto BuildPushPreview(const std::filesystem::path& repo) -> std::string {
     const auto data = CollectPreviewData(repo);
     std::ostringstream out;
     out << "Push Preview\n";
-    out << "repo: " << repo.lexically_normal().generic_string() << "\n";
+    out << "repo: " << Utf8PathText(repo.lexically_normal()) << "\n";
     out << "branch: " << data.branch << "\n";
     out << "upstream: " << data.upstream << "\n";
     out << "tracking: " << data.tracking << "\n\n";
@@ -2392,17 +2405,9 @@ auto BuildDiscoverLines(const std::vector<RepoView>& repos, const std::filesyste
     for (std::size_t i = 0; i < repos.size(); ++i) {
         const auto& r = repos[i];
         std::string path = DisplayRepoPath(InWorkspaceRoot, r.path);
-        if (path.size() > 90) {
-            path = "..." + path.substr(path.size() - 87);
-        }
-        std::string tracking = r.tracking;
-        if (tracking.size() > 20) {
-            tracking = tracking.substr(0, 20) + "...";
-        }
-        std::string branch = r.branch;
-        if (branch.size() > 20) {
-            branch = branch.substr(0, 20) + "...";
-        }
+        path = TuiDisplayTruncateFront(path, 90);
+        const auto tracking = TuiDisplayTruncateEnd(r.tracking, 20);
+        const auto branch = TuiDisplayTruncateEnd(r.branch, 20);
         const std::string dirty = r.repoDirty ? "yes" : "no";
         lines.push_back(std::to_string(i + 1) + " | " + branch + " | " + tracking + " | " + dirty + " | " + path);
     }
@@ -2638,12 +2643,13 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
     auto status_line = [&](const std::string& line, const std::optional<StatusTone> forcedTone = std::nullopt) {
         const auto tone = forcedTone.value_or(classify_line_tone(line));
         const auto icon = compact_status_icon(tone);
+        const auto displayLine = TuiDisplaySanitize(line);
         if (icon.empty()) {
-            return text(line) | tone_style(tone);
+            return text(displayLine) | tone_style(tone);
         }
         return hbox({
             text(icon + std::string(" ")) | tone_style(tone),
-            text(line) | tone_style(tone),
+            text(displayLine) | tone_style(tone),
         });
     };
 
@@ -2652,17 +2658,18 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
     };
 
     auto status_paragraph = [&](const std::string& line) {
-        return paragraph(line) | classify_line_style(line);
+        return paragraph(TuiDisplaySanitize(line)) | classify_line_style(line);
     };
 
     auto status_title = [&](const std::string& title, const StatusTone tone = StatusTone::Info) {
         const auto icon = compact_status_icon(tone);
+        const auto displayTitle = TuiDisplaySanitize(title);
         if (icon.empty()) {
-            return text(title) | kSectionTitleStyle;
+            return text(displayTitle) | kSectionTitleStyle;
         }
         return hbox({
             text(icon + std::string(" ")) | tone_style(tone) | bold,
-            text(title) | kSectionTitleStyle,
+            text(displayTitle) | kSectionTitleStyle,
         });
     };
 
@@ -2703,12 +2710,16 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
             const std::string marker = repo.childRepoCount > 0 ? (collapsed ? "[+] " : "[-] ") : "    ";
             const std::string typeTag = RepoTypeTag(repo.type);
             if (repo.type == "registered-uninit") {
-                menu.push_back(indent + marker + typeTag + UninitializedRepoListLabel(workspaceRoot, repo) + " | " + path);
+                menu.push_back(TuiDisplaySanitize(
+                    indent + marker + typeTag +
+                    UninitializedRepoListLabel(workspaceRoot, repo) + " | " + path));
             } else {
                 const auto auditMarker = !repo.statusKnown
                     ? "? "
                     : (repo.repoDirty ? "* " : "  ");
-                menu.push_back(indent + marker + typeTag + auditMarker + repo.branch + " | " + path);
+                menu.push_back(TuiDisplaySanitize(
+                    indent + marker + typeTag + auditMarker + repo.branch +
+                    " | " + path));
             }
         }
         if (menu.empty()) {
@@ -3137,7 +3148,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
         preview.auditVerification = InAuditVerification.has_value();
         preview.auditRun.reset();
         preview.title = InLabel;
-        preview.body = "state: running\nrepo: " + InRepo.lexically_normal().generic_string() + "\nscope: " + InScopeLabel + "\ncommand: " + InCommandText + "\n\n(waiting for command output...)";
+        preview.body = "state: running\nrepo: " + Utf8PathText(InRepo.lexically_normal()) + "\nscope: " + InScopeLabel + "\ncommand: " + InCommandText + "\n\n(waiting for command output...)";
         if (!begin_async_operation(
                 InLabel,
                 TuiAsyncSurface::Preview,
@@ -3189,7 +3200,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     shell::CaptureLimits{
                         kTuiStatusMaxBytes,
                         kTuiStatusMaxBytes});
-                std::string body = "repo: " + InRepo.lexically_normal().generic_string() + "\n"
+                std::string body = "repo: " + Utf8PathText(InRepo.lexically_normal()) + "\n"
                     + "scope: " + InScopeLabel + "\n"
                     + "command: " + InCommandText + "\n"
                     + "exit: " + std::to_string(result.exitCode) + "\n\n";
@@ -3418,11 +3429,11 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
             footerIsError = true;
             return false;
         }
-        const auto parentPath = std::filesystem::path(row.parentRepo);
+        const auto parentPath = Utf8Path(row.parentRepo);
         const auto relPath = row.parentRelativePath.empty()
-            ? row.path.filename().generic_string()
+            ? Utf8PathText(row.path.filename())
             : row.parentRelativePath;
-        const std::string commandText = "git -C \"" + parentPath.generic_string() + "\" submodule update --init --progress -- \"" + relPath + "\"";
+        const std::string commandText = "git -C \"" + Utf8PathText(parentPath) + "\" submodule update --init --progress -- \"" + relPath + "\"";
         const std::string label = "submodule init";
         const bool discoverWasActive = discover.active;
         const bool refreshDirtyOnly = dirtyOnly;
@@ -3434,8 +3445,8 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
         preview.auditVerification = false;
         preview.auditRun.reset();
         preview.title = label;
-        preview.body = "state: running\nrepo: " + row.path.lexically_normal().generic_string()
-            + "\nparent: " + parentPath.generic_string()
+        preview.body = "state: running\nrepo: " + Utf8PathText(row.path.lexically_normal())
+            + "\nparent: " + Utf8PathText(parentPath)
             + "\ncommand: " + commandText
             + "\n\n(waiting for command output...)";
 
@@ -3457,8 +3468,8 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                         streamOutput.append(chunk.data(), chunk.size());
                         currentOutput = streamOutput;
                     }
-                    std::string liveBody = "repo: " + std::filesystem::path(relPath).lexically_normal().generic_string() + "\n"
-                        + "parent: " + parentPath.generic_string() + "\n"
+                    std::string liveBody = "repo: " + Utf8PathText(Utf8Path(relPath).lexically_normal()) + "\n"
+                        + "parent: " + Utf8PathText(parentPath) + "\n"
                         + "command: " + commandText + "\n"
                         + "state: running\n\n"
                         + currentOutput;
@@ -3483,12 +3494,12 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 };
 
                 const auto result = shell::ExecuteCommand("git",
-                    {"-C", parentPath.string(), "submodule", "update", "--init", "--progress", "--", relPath},
+                    {"-C", Utf8PathText(parentPath), "submodule", "update", "--init", "--progress", "--", relPath},
                     shell::ExecMode::Capture, parentPath, progressCb);
 
                 // Build final body with both stdout and stderr
-                std::string body = "repo: " + std::filesystem::path(relPath).lexically_normal().generic_string() + "\n"
-                    + "parent: " + parentPath.generic_string() + "\n"
+                std::string body = "repo: " + Utf8PathText(Utf8Path(relPath).lexically_normal()) + "\n"
+                    + "parent: " + Utf8PathText(parentPath) + "\n"
                     + "command: " + commandText + "\n"
                     + "exit: " + std::to_string(result.exitCode) + "\n";
 
@@ -4411,6 +4422,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
         }
     };
 
+    int repositoryMenuInteriorWidth = 0;
     MenuOption repoMenuOption;
     repoMenuOption.entries_option.transform = [&](EntryState state) {
         StatusTone tone = StatusTone::Info;
@@ -4421,11 +4433,18 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
         } else if (state.label.find("* ") != std::string::npos) {
             tone = StatusTone::Warning;
         }
-        auto row = compact_status_icon(tone).empty()
-            ? text(state.label) | kSecondaryStyle
+        const auto icon = compact_status_icon(tone);
+        const int iconPrefixWidth = icon.empty()
+            ? 0
+            : TuiDisplayWidth(icon + std::string(" "));
+        const auto label = TuiDisplayPadRight(
+            state.label,
+            std::max(0, repositoryMenuInteriorWidth - iconPrefixWidth));
+        auto row = icon.empty()
+            ? text(label) | kSecondaryStyle
             : hbox({
-                  text(compact_status_icon(tone) + std::string(" ")) | tone_style(tone),
-                  text(state.label) | kSecondaryStyle,
+                  text(icon + std::string(" ")) | tone_style(tone),
+                  text(label) | kSecondaryStyle,
               });
         if (state.label.find("(uninit)") != std::string::npos) {
             row = row | kWarningStyle;
@@ -5523,6 +5542,35 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 screen.RequestAnimationFrame();
             }));
         }
+        const auto terminalSize = ftxui::Terminal::Size();
+        const TuiAuditSemanticTheme frameTheme{
+            .mono = resolvedTheme.effectiveMode == TuiThemeMode::Mono,
+            .palette = resolvedTheme.palette,
+        };
+        constexpr int kMinRepoListWidth = 22;
+        constexpr int kMaxRepoListWidth = 60;
+        int longestRepositoryEntry = 0;
+        for (const auto& entry : menu) {
+            longestRepositoryEntry = std::max(
+                longestRepositoryEntry,
+                TuiDisplayWidth(entry));
+        }
+        const int reservedRepositoryPaneWidth = history.active
+            ? kMinRepoListWidth
+            : std::clamp(
+                longestRepositoryEntry + 4,
+                kMinRepoListWidth,
+                kMaxRepoListWidth);
+        const auto dashboardGeometry = ComputeTuiAuditDashboardGeometry(
+            terminalSize.dimx,
+            terminalSize.dimy,
+            tui_state.GetMode() == kano::git::commands::TuiMode::Command,
+            frameTheme.mono,
+            reservedRepositoryPaneWidth);
+        repositoryMenuInteriorWidth =
+            dashboardGeometry.repositoryMenuContentWidth;
+        const int rightPanelContentWidth = std::max(
+            0, dashboardGeometry.rightPanelWidth - 2);
         Element rightPanel;
 
         if (discover.active) {
@@ -5534,7 +5582,8 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
 
             Elements pageRows;
             for (int i = start; i < end; ++i) {
-                pageRows.push_back(text(discover.lines[static_cast<std::size_t>(i)]));
+                pageRows.push_back(text(TuiDisplaySanitize(
+                    discover.lines[static_cast<std::size_t>(i)])));
             }
             if (pageRows.empty()) {
                 pageRows.push_back(text("(no lines in this page)") | kMutedStyle);
@@ -5568,7 +5617,8 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 (discover.loadState.phase == TuiLoadPhase::Failed ||
                  discover.loadState.phase == TuiLoadPhase::Cancelled ||
                  discover.loadState.phase == TuiLoadPhase::Empty)
-                    ? paragraph(discover.loadState.hint) | kSecondaryStyle
+                    ? paragraph(TuiDisplaySanitize(discover.loadState.hint)) |
+                        kSecondaryStyle
                     : text(""),
                 status_text("page: " + std::to_string(clampedPage + 1) + "/" + std::to_string(totalPages) +
                      "  lines: " + std::to_string(start + 1) + "-" + std::to_string(std::max(start + 1, end)) +
@@ -5612,9 +5662,11 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     const bool selected = static_cast<int>(i) == tui_state.palette_state.selected_index;
                     auto row = hbox({
                         text(selected ? "> " : "  "),
-                        text("[" + item.category + "] ") | kInfoStyle,
-                        text(item.name) | bold,
-                        text(" - " + item.description) | kSecondaryStyle,
+                        text(TuiDisplaySanitize("[" + item.category + "] ")) |
+                            kInfoStyle,
+                        text(TuiDisplaySanitize(item.name)) | bold,
+                        text(TuiDisplaySanitize(" - " + item.description)) |
+                            kSecondaryStyle,
                     });
                     if (selected) {
                         row = row | kSelectedStyle;
@@ -5636,7 +5688,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
             rightPanel = vbox({
                 status_title("Confirm Command", StatusTone::Warning),
                 separator(),
-                paragraph(tui_state.confirm_state.message),
+                paragraph(TuiDisplaySanitize(tui_state.confirm_state.message)),
                 separator(),
                 text("Press y to confirm, n/Esc to cancel") | kWarningStyle,
             }) | border;
@@ -5650,20 +5702,23 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
             rightPanel = vbox({
                 status_title("Rebase Runner", rebaseRun.waitingConflictResolution ? StatusTone::Warning : StatusTone::Running),
                 separator(),
-                status_text("repo: " + rebaseRun.repo.lexically_normal().generic_string()),
+                status_text("repo: " + Utf8PathText(rebaseRun.repo.lexically_normal())),
                 status_text(progress),
                 status_text("current: " + current),
                 status_text(rebaseRun.waitingConflictResolution
                          ? "state: waiting resolution (C=continue, S=skip, A=abort)"
                          : "state: ready (N=next, A=abort, q=close panel)"),
                 separator(),
-                paragraph(rebaseRun.lastOutput.empty() ? "(no output yet)" : rebaseRun.lastOutput),
+                paragraph(TuiDisplaySanitize(
+                    rebaseRun.lastOutput.empty()
+                        ? "(no output yet)"
+                        : rebaseRun.lastOutput)),
             }) | border;
         } else if (rebasePlanner.active) {
             rightPanel = vbox({
                 status_title("Rebase Planner"),
                 separator(),
-                status_text("repo: " + rebasePlanner.repo.lexically_normal().generic_string()),
+                status_text("repo: " + Utf8PathText(rebasePlanner.repo.lexically_normal())),
                 status_text("base: " + rebasePlanner.baseRef),
                 text("controls: up/down select, p=pick s=squash f=fixup d=drop, q close") | kMutedStyle,
                 separator(),
@@ -5672,7 +5727,9 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     for (std::size_t i = 0; i < rebasePlanner.items.size(); ++i) {
                         const auto& it = rebasePlanner.items[i];
                         const bool sel = static_cast<int>(i) == rebasePlanner.selectedIndex;
-                        auto row = text(std::string(sel ? "> " : "  ") + it.action + " " + it.sha + " " + it.title);
+                        auto row = text(TuiDisplaySanitize(
+                            std::string(sel ? "> " : "  ") + it.action +
+                            " " + it.sha + " " + it.title));
                         if (sel) {
                             row = row | kHighlightStyle;
                         }
@@ -5685,13 +5742,13 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 }()) | border,
                 separator(),
                 text("Plan preview") | kInfoStyle,
-                paragraph(rebasePlanner.preview),
+                paragraph(TuiDisplaySanitize(rebasePlanner.preview)),
             }) | border;
         } else if (rebase.active) {
             rightPanel = vbox({
                 status_title("Rebase Preflight", StatusTone::Warning),
                 separator(),
-                status_text("repo: " + rebase.repo.lexically_normal().generic_string()),
+                status_text("repo: " + Utf8PathText(rebase.repo.lexically_normal())),
                 status_text("branch: " + rebase.branch),
                 status_text("upstream: " + rebase.upstream),
                 status_text("tracking: " + rebase.tracking),
@@ -5704,7 +5761,8 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     Elements rows;
                     const auto maxItems = std::min<std::size_t>(rebase.candidates.size(), 24);
                     for (std::size_t i = 0; i < maxItems; ++i) {
-                        rows.push_back(text(rebase.candidates[i]));
+                        rows.push_back(text(TuiDisplaySanitize(
+                            rebase.candidates[i])));
                     }
                     if (rebase.candidates.size() > maxItems) {
                         rows.push_back(text("... and " + std::to_string(rebase.candidates.size() - maxItems) + " more"));
@@ -5726,14 +5784,17 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
             rightPanel = vbox({
                 status_title("Cherry-pick Runner", cherryRun.waitingConflictResolution ? StatusTone::Warning : StatusTone::Running),
                 separator(),
-                status_text("repo: " + cherryRun.repo.lexically_normal().generic_string()),
+                status_text("repo: " + Utf8PathText(cherryRun.repo.lexically_normal())),
                 status_text(progress),
                 status_text("current: " + current),
                 status_text(cherryRun.waitingConflictResolution
                          ? "state: waiting conflict resolution (c=continue, s=skip, a=abort)"
                          : "state: ready (n=next, a=abort, q=close panel)"),
                 separator(),
-                paragraph(cherryRun.lastOutput.empty() ? "(no output yet)" : cherryRun.lastOutput),
+                paragraph(TuiDisplaySanitize(
+                    cherryRun.lastOutput.empty()
+                        ? "(no output yet)"
+                        : cherryRun.lastOutput)),
             }) | border;
         } else if (cherry.active) {
             rightPanel = vbox({
@@ -5750,7 +5811,9 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     for (std::size_t i = 0; i < maxItems; ++i) {
                         const auto& c = cherry.commits[i];
                         const auto dup = c.alreadyInTarget ? "dup" : "new";
-                        rows.push_back(text(c.sha + " | " + dup + " | risk=" + c.risk + " | " + c.title));
+                        rows.push_back(text(TuiDisplaySanitize(
+                            c.sha + " | " + dup + " | risk=" + c.risk +
+                            " | " + c.title)));
                     }
                     if (cherry.commits.size() > maxItems) {
                         rows.push_back(text("... and " + std::to_string(cherry.commits.size() - maxItems) + " more"));
@@ -5764,8 +5827,8 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
             rightPanel = vbox({
                 status_title(confirm.title, StatusTone::Warning),
                 separator(),
-                text(confirm.description),
-                status_text("repo: " + confirm.repo.lexically_normal().generic_string()),
+                text(TuiDisplaySanitize(confirm.description)),
+                status_text("repo: " + Utf8PathText(confirm.repo.lexically_normal())),
                 status_text("command: git" + [&] {
                     std::string cmd;
                     for (const auto& part : confirm.command) {
@@ -5789,7 +5852,9 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     Elements elems;
                     elems.reserve(lines.size());
                     for (const auto& line : lines) {
-                        elems.push_back(line.empty() ? text("") : paragraph(line));
+                        elems.push_back(line.empty()
+                            ? text("")
+                            : paragraph(TuiDisplaySanitize(line)));
                     }
                     return vbox(std::move(elems));
                 }(),
@@ -5854,7 +5919,9 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     Elements sectionRows;
                     for (int i = 0; i < sectionCount; ++i) {
                         const bool isSelected = i == selectedSection;
-                        auto row = text(std::string(isSelected ? "> " : "  ") + overlay->sections[i].title);
+                        auto row = text(TuiDisplaySanitize(
+                            std::string(isSelected ? "> " : "  ") +
+                            overlay->sections[i].title));
                         if (isSelected) {
                             row = row | kSelectedStyle;
                         }
@@ -5907,8 +5974,13 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                             }) | size(WIDTH, EQUAL, 32) | border,
                             separator(),
                             vbox({
-                                text(overlay->title) | kSectionTitleStyle,
-                                text(sectionCount == 0 ? std::string("(no selected change)") : overlay->sections[selectedSection].title) | kMutedStyle,
+                                text(TuiDisplaySanitize(overlay->title)) |
+                                    kSectionTitleStyle,
+                                text(TuiDisplaySanitize(
+                                    sectionCount == 0
+                                        ? std::string("(no selected change)")
+                                        : overlay->sections[selectedSection].title)) |
+                                    kMutedStyle,
                                 separator(),
                                 vbox(std::move(bodyRows)) | yframe | flex,
                             }) | flex,
@@ -5963,23 +6035,31 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                          : std::to_string(entry.globalIndex) + "/?";
                  };
 
-                 auto base_prefix_width = static_cast<int>(std::string("  ").size() + kRowPrefix.size());
+                  const int basePrefixWidth = TuiDisplayWidth("  ") +
+                      TuiDisplayWidth(kRowPrefix);
                  int minAuthorAllowance = historyRowWidth;
-                 std::size_t maxEmailLen = 0;
-                 std::size_t maxNameLen = 0;
+                  int maxEmailWidth = 0;
+                  int maxNameWidth = 0;
 
                  for (const auto& entry : entries) {
                      const auto indexText = build_index_text(entry);
                      const auto indexPart = "[" + indexText + "] ";
                      const auto shaPart = entry.isDirtyWorkingTree ? "(dirty)" : entry.sha;
-                     const int baseLen = static_cast<int>(indexPart.size() + shaPart.size() + 1);
-                     const int allowance = historyRowWidth - base_prefix_width - baseLen - kMinSubjectWidth - static_cast<int>(kAuthorSeparator.size());
+                      const int baseLen = TuiDisplayWidth(
+                          indexPart + shaPart + " ");
+                      const int allowance = historyRowWidth - basePrefixWidth -
+                          baseLen - kMinSubjectWidth -
+                          TuiDisplayWidth(kAuthorSeparator);
                      minAuthorAllowance = std::min(minAuthorAllowance, allowance);
                      if (!entry.authorEmail.empty()) {
-                         maxEmailLen = std::max(maxEmailLen, entry.authorEmail.size());
+                          maxEmailWidth = std::max(
+                              maxEmailWidth,
+                              TuiDisplayWidth(entry.authorEmail));
                      }
                      if (!entry.authorName.empty()) {
-                         maxNameLen = std::max(maxNameLen, entry.authorName.size());
+                          maxNameWidth = std::max(
+                              maxNameWidth,
+                              TuiDisplayWidth(entry.authorName));
                      }
                  }
 
@@ -5993,54 +6073,33 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                  int authorColumnWidth = 0;
                  if (!entries.empty() && minAuthorAllowance > 0) {
                      const int allowed = minAuthorAllowance;
-                     if (maxEmailLen > 0 && static_cast<int>(maxEmailLen) <= allowed) {
-                         authorMode = AuthorMode::Email;
-                         authorColumnWidth = static_cast<int>(maxEmailLen);
-                     } else if (maxNameLen > 0 && static_cast<int>(maxNameLen) <= allowed) {
-                         authorMode = AuthorMode::Name;
-                         authorColumnWidth = static_cast<int>(maxNameLen);
-                     } else if (allowed > 0) {
-                         if (maxEmailLen > 0) {
-                             authorMode = AuthorMode::Email;
-                             authorColumnWidth = allowed;
-                         } else if (maxNameLen > 0) {
+                      if (maxEmailWidth > 0 && maxEmailWidth <= allowed) {
+                          authorMode = AuthorMode::Email;
+                          authorColumnWidth = maxEmailWidth;
+                      } else if (maxNameWidth > 0 && maxNameWidth <= allowed) {
+                          authorMode = AuthorMode::Name;
+                          authorColumnWidth = maxNameWidth;
+                      } else if (allowed > 0) {
+                          if (maxEmailWidth > 0) {
+                              authorMode = AuthorMode::Email;
+                              authorColumnWidth = allowed;
+                          } else if (maxNameWidth > 0) {
                              authorMode = AuthorMode::Name;
                              authorColumnWidth = allowed;
                          }
                      }
                  }
 
-                 auto truncate_with_ellipsis = [&](const std::string& value, int width) {
-                     if (width <= 0) {
-                         return std::string();
-                     }
-                     if (static_cast<int>(value.size()) <= width) {
-                         return value;
-                     }
-                     if (width <= 3) {
-                         return value.substr(0, static_cast<std::size_t>(width));
-                     }
-                     return value.substr(0, static_cast<std::size_t>(width - 3)) + "...";
-                 };
+                  auto truncate_with_ellipsis = [&](const std::string& value, int width) {
+                      return TuiDisplayTruncateEnd(value, width);
+                  };
 
-                 auto pad_right = [&](const std::string& value, int width) {
-                     if (width <= 0) {
-                         return std::string();
-                     }
-                     if (static_cast<int>(value.size()) >= width) {
-                         return value.substr(0, static_cast<std::size_t>(width));
-                     }
-                     return value + std::string(static_cast<std::size_t>(width - static_cast<int>(value.size())), ' ');
-                 };
+                  auto pad_right = [&](const std::string& value, int width) {
+                      return TuiDisplayPadRight(value, width);
+                  };
 
-                 auto pad_left = [&](const std::string& value, int width) {
-                     if (width <= 0) {
-                         return std::string();
-                     }
-                     if (static_cast<int>(value.size()) >= width) {
-                         return value.substr(0, static_cast<std::size_t>(width));
-                     }
-                     return std::string(static_cast<std::size_t>(width - static_cast<int>(value.size())), ' ') + value;
+                  auto pad_left = [&](const std::string& value, int width) {
+                      return TuiDisplayPadLeft(value, width);
                  };
 
                  for (std::size_t i = 0; i < entries.size(); ++i) {
@@ -6048,23 +6107,31 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                       const bool isSelected = clampedSelectedLine == static_cast<int>(i);
                        auto prefix = std::string(isSelected ? "> " : "  ");
 
-                       std::string chosenLine;
-                       if (authorMode == AuthorMode::None || authorColumnWidth <= 0) {
-                           chosenLine = BuildHistoryDisplayLine(entries[i]);
-                       } else {
+                        std::string chosenLine;
+                        if (authorMode == AuthorMode::None || authorColumnWidth <= 0) {
+                            const int availableHistoryCells = std::max(
+                                0,
+                                historyRowWidth - basePrefixWidth);
+                            chosenLine = BuildHistoryDisplayLine(
+                                entries[i],
+                                availableHistoryCells);
+                        } else {
                            const auto indexText = build_index_text(entries[i]);
                            const auto indexPart = "[" + indexText + "] ";
                            const auto shaPart = entries[i].isDirtyWorkingTree ? "(dirty)" : entries[i].sha;
                            const auto subjectPart = entries[i].isDirtyWorkingTree ? "dirty working tree" : entries[i].subject;
-                           const int baseLen = static_cast<int>(indexPart.size() + shaPart.size() + 1);
-                           const int subjectWidth = historyRowWidth - base_prefix_width - baseLen - authorColumnWidth - static_cast<int>(kAuthorSeparator.size());
+                            const int baseLen = TuiDisplayWidth(
+                                indexPart + shaPart + " ");
+                         const int subjectWidth = historyRowWidth -
+                             basePrefixWidth - baseLen - authorColumnWidth -
+                             TuiDisplayWidth(kAuthorSeparator);
                            const auto subjectTrimmed = truncate_with_ellipsis(subjectPart, subjectWidth);
                            const auto subjectPadded = pad_right(subjectTrimmed, subjectWidth);
 
                            std::string authorText = (authorMode == AuthorMode::Email) ? entries[i].authorEmail : entries[i].authorName;
-                           if (static_cast<int>(authorText.size()) > authorColumnWidth) {
-                               authorText = authorText.substr(0, static_cast<std::size_t>(authorColumnWidth));
-                           }
+                            authorText = TuiDisplayTruncateEnd(
+                                authorText,
+                                authorColumnWidth);
                            const auto authorPadded = pad_left(authorText, authorColumnWidth);
                            chosenLine = indexPart + shaPart + " " + subjectPadded + kAuthorSeparator + authorPadded;
                        }
@@ -6181,7 +6248,8 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 rightPanel = vbox({
                     status_title("Repository Details", StatusTone::Warning),
                     separator(),
-                    status_paragraph("path: " + pathText),
+                    status_paragraph(TuiDisplayTruncateEndWithPrefix(
+                        "path: ", pathText, rightPanelContentWidth)),
                     status_paragraph("parent: " + parentText),
                     status_paragraph("type: registered-uninit"),
                     status_paragraph("inventory: " + inventoryProvenanceDetail),
@@ -6209,13 +6277,8 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     row.statusKnown,
                     row.worktreeDirty)) + (row.statusKnown ? cacheMark : "");
                 const auto dirtyWorktreesText = CompactDetailValue(row.dirtyWorktrees.empty() ? "-" : row.dirtyWorktrees);
-                int detailRepoListWidth = 0;
-                for (const auto& entry : menu) {
-                    detailRepoListWidth = std::max(detailRepoListWidth, static_cast<int>(entry.size()));
-                }
-                detailRepoListWidth = std::clamp(detailRepoListWidth + 4, 22, 60);
-                const auto terminalWidth = ftxui::Terminal::Size().dimx;
-                const int estimatedRightPanelWidth = std::max(24, terminalWidth - detailRepoListWidth - 7);
+                const int estimatedRightPanelWidth =
+                    dashboardGeometry.rightPanelWidth;
                 const auto inventoryProvenanceDetail =
                     FormatTuiInventoryProvenanceFull(workspaceInventoryProvenance);
                 const auto fullDetailLines = std::vector<std::string>{
@@ -6263,7 +6326,10 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                                 startupLoadState.inventoryProvenance)) + " | " +
                                 std::string(TuiStartupSnapshotFreshnessLabel(
                                     workspaceInventoryProvenance.freshness)))),
-                    status_paragraph(DetailLine(detailLabelMode, "path", "p", pathText)),
+                    status_paragraph(TuiDisplayTruncateEndWithPrefix(
+                        DetailLine(detailLabelMode, "path", "p", ""),
+                        pathText,
+                        rightPanelContentWidth)),
                     status_paragraph(DetailLine(detailLabelMode, "parent", "par", parentText)),
                     status_paragraph(DetailLine(detailLabelMode, "type", "t", row.type)
                         + (detailLabelMode == DetailLabelMode::Bare ? " | " + std::to_string(row.childRepoCount) + " children" : " | " + DetailLine(detailLabelMode, "children", "k", std::to_string(row.childRepoCount)))),
@@ -6283,12 +6349,12 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                                       : "inventory status is unknown; press r or run :refresh for live audit data") |
                               kWarningStyle,
                     separator(),
-                    text(dirtyFilesTitle) | kInfoStyle,
+                    text(TuiDisplaySanitize(dirtyFilesTitle)) | kInfoStyle,
                     row.dirtyFilesIncomplete
-                        ? paragraph(
+                        ? paragraph(TuiDisplaySanitize(
                               row.dirtyFilesError.empty()
                                   ? "dirty-file enumeration was incomplete; displayed paths are partial"
-                                  : row.dirtyFilesError + "; displayed paths are partial") |
+                                  : row.dirtyFilesError + "; displayed paths are partial")) |
                               kWarningStyle
                         : text(""),
                     row.statusFromSnapshot
@@ -6302,7 +6368,9 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                                   const auto changeSuffix = dirtyFile.changedLines >= 0
                                       ? " (" + std::to_string(dirtyFile.changedLines) + " lines)"
                                       : "";
-                                  lines.push_back(paragraph("- " + dirtyFile.displayPath + changeSuffix) | kWarningStyle);
+                                   lines.push_back(paragraph(TuiDisplaySanitize(
+                                       "- " + dirtyFile.displayPath + changeSuffix)) |
+                                       kWarningStyle);
                               }
                               if (row.dirtyFiles.size() > dirtyPreviewLimit) {
                                   lines.push_back(paragraph("...") | kMutedStyle);
@@ -6340,7 +6408,8 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     ? paragraph("The first frame is ready. Loading the trusted cached repository inventory in a bounded background subprocess; q/Escape requests cancellation and exits.") | kRunningStyle
                     : (startupLoadState.phase == TuiLoadPhase::Failed ||
                        startupLoadState.phase == TuiLoadPhase::Cancelled)
-                        ? paragraph(startupLoadState.hint) | kWarningStyle
+                        ? paragraph(TuiDisplaySanitize(startupLoadState.hint)) |
+                            kWarningStyle
                         : paragraph("No repositories to display. Run :refresh for bounded live discovery or q to exit.") | kMutedStyle,
             }) | border;
         }
@@ -6491,16 +6560,6 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 "command output is not a verified operation receipt";
         }
 
-        const auto terminalSize = ftxui::Terminal::Size();
-        const TuiAuditSemanticTheme frameTheme{
-            .mono = resolvedTheme.effectiveMode == TuiThemeMode::Mono,
-            .palette = resolvedTheme.palette,
-        };
-        const auto dashboardGeometry = ComputeTuiAuditDashboardGeometry(
-            terminalSize.dimx,
-            terminalSize.dimy,
-            tui_state.GetMode() == kano::git::commands::TuiMode::Command,
-            frameTheme.mono);
         const auto frameGeometry = dashboardGeometry.frame;
         auto auditFrameModel = TuiAuditFrameModel{
             .view = frameView,
@@ -6559,8 +6618,9 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     const bool selected = static_cast<int>(i) == tui_state.command_state.candidates.selected_index;
                     auto row = hbox({
                         text(selected ? "> " : "  "),
-                        text(c.text) | bold | kPrimaryStyle,
-                        text(" - " + c.description) | kSecondaryStyle,
+                        text(TuiDisplaySanitize(c.text)) | bold | kPrimaryStyle,
+                        text(TuiDisplaySanitize(" - " + c.description)) |
+                            kSecondaryStyle,
                     });
                     if (selected) {
                         row = row | kSelectedStyle;
@@ -6583,7 +6643,8 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     kSecondaryStyle);
                 commandRows.push_back(separator());
             }
-            commandRows.push_back((text(":" + inputLine) | kPrimaryStyle) | border);
+            commandRows.push_back((text(TuiDisplaySanitize(":" + inputLine)) |
+                kPrimaryStyle) | border);
             if (!dashboardGeometry.compactRoot) {
                 commandRows.push_back(separator());
             }
@@ -6599,29 +6660,24 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
             list_scrolled->Render() | border,
         });
 
-        // Compute a stable width for the left panel based on the longest
-        // menu entry, capped so it never dominates the screen.  This prevents
-        // the two-flex layout from shifting when content on either side changes.
-        const int kMinRepoListWidth = 22;
-        const int kMaxRepoListWidth = 60;
-        int longestEntry = 0;
-        for (const auto& entry : menu) {
-            longestEntry = std::max(longestEntry, static_cast<int>(entry.size()));
-        }
-        // +4 accounts for border (2) + small padding (2)
-        const int repoListWidth = std::clamp(longestEntry + 4, kMinRepoListWidth, kMaxRepoListWidth);
+        const int repoListWidth = dashboardGeometry.repositoryPaneWidth;
 
-        auto mainPanel = history.active
-                             ? hbox({
-                                    repoListPanel | size(WIDTH, EQUAL, kMinRepoListWidth),
-                                    separator(),
-                                    rightPanel | flex,
-                                })
-                             : hbox({
-                                   repoListPanel | size(WIDTH, EQUAL, repoListWidth),
-                                   separator(),
-                                   rightPanel | flex,
-                               });
+        Element mainPanel;
+        if (dashboardGeometry.repositoryPaneCollapsed) {
+            mainPanel = rightPanel | flex;
+        } else if (history.active) {
+            mainPanel = hbox({
+                repoListPanel | size(WIDTH, EQUAL, kMinRepoListWidth),
+                separator(),
+                rightPanel | flex,
+            });
+        } else {
+            mainPanel = hbox({
+                repoListPanel | size(WIDTH, EQUAL, repoListWidth),
+                separator(),
+                rightPanel | flex,
+            });
+        }
 
         Elements rootRows;
         if (dashboardGeometry.compactRoot) {

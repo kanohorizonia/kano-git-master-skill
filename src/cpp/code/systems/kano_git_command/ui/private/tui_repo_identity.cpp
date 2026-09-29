@@ -21,12 +21,21 @@ auto StripTrailingSeparators(std::string InValue) -> std::string {
     return InValue;
 }
 
+auto Utf8PathText(const std::filesystem::path& InPath) -> std::string {
+#if defined(_WIN32)
+    const auto value = InPath.generic_u8string();
+    return {value.begin(), value.end()};
+#else
+    return InPath.generic_string();
+#endif
+}
+
 }  // namespace
 
 auto NormalizeRepoIdentityKey(const std::filesystem::path& InPath)
     -> std::string {
     return StripTrailingSeparators(
-        InPath.lexically_normal().generic_string());
+        Utf8PathText(InPath.lexically_normal()));
 }
 
 auto ResolveStableRepoIdentityKey(const std::filesystem::path& InPath)

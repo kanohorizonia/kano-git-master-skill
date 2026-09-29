@@ -1,11 +1,41 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include "tui_display_cells.hpp"
 #include "tui_history_lifecycle.hpp"
 
 #include <string>
 #include <vector>
 
 using namespace kano::git::commands;
+
+TEST_CASE(
+    "TUI authorless history rows stay within a narrow Unicode cell budget",
+    "[unit][tui_history_lifecycle][KOG-BUG-0109]") {
+    constexpr int kAvailableCells = 30;
+    const TuiHistoryEntry entry{
+        .sha = "a1b2c3d",
+        .subject = std::string{"\xE6\xB8\xAC\xE8\xA9\xA6 e\xCC\x81 "}
+            + "\xF0\x9F\xAA\x90 long Unicode history subject "
+            + "\xE6\xB8\xAC\xE8\xA9\xA6",
+        .globalIndex = 7,
+        .totalCount = 42,
+    };
+
+    const auto unbounded = BuildHistoryDisplayLine(entry);
+    REQUIRE(TuiDisplayWidth(unbounded) > kAvailableCells);
+
+    const auto bounded = BuildHistoryDisplayLine(entry, kAvailableCells);
+
+    REQUIRE(TuiDisplayWidth(bounded) <= kAvailableCells);
+    REQUIRE(bounded.starts_with("[7/42] a1b2c3d "));
+    REQUIRE(bounded.ends_with("..."));
+    REQUIRE(TuiDisplaySanitize(bounded) == bounded);
+    for (const unsigned char byte : bounded) {
+        const bool isPrintable =
+            (byte >= 0x20U && byte != 0x7FU) || byte >= 0x80U;
+        REQUIRE(isPrintable);
+    }
+}
 
 TEST_CASE(
     "TUI history batch cancels between anchor and log without a second launch",

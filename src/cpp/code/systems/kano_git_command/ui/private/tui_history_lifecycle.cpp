@@ -1,6 +1,7 @@
 #include "tui_history_lifecycle.hpp"
 
 #include "shell_executor.hpp"
+#include "tui_display_cells.hpp"
 
 #include <algorithm>
 #include <array>
@@ -91,6 +92,31 @@ auto BuildHistorySearchLine(const TuiHistoryEntry& InEntry) -> std::string {
 }
 
 }  // namespace
+
+auto BuildHistoryDisplayLine(const TuiHistoryEntry& InEntry,
+                             const std::string& InAuthorText) -> std::string {
+    const std::string indexText = InEntry.totalCount > 0
+        ? std::to_string(InEntry.globalIndex) + "/" +
+            std::to_string(InEntry.totalCount)
+        : std::to_string(InEntry.globalIndex) + "/?";
+    std::string line = "[" + indexText + "] ";
+    if (InEntry.isDirtyWorkingTree) {
+        line += "(dirty) dirty working tree";
+    } else {
+        line += InEntry.sha + " " + InEntry.subject;
+    }
+    if (!InAuthorText.empty()) {
+        line += " | " + InAuthorText;
+    }
+    return TuiDisplaySanitize(line);
+}
+
+auto BuildHistoryDisplayLine(const TuiHistoryEntry& InEntry,
+                             const int InMaximumDisplayCells) -> std::string {
+    return TuiDisplayTruncateEnd(
+        BuildHistoryDisplayLine(InEntry),
+        InMaximumDisplayCells);
+}
 
 auto TuiHistoryPageOrderName(const TuiHistoryPageOrder InOrder) noexcept
     -> std::string_view {

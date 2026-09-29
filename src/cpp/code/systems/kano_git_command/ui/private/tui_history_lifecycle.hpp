@@ -23,6 +23,14 @@ struct TuiHistoryEntry {
     std::string displayLine;
 };
 
+[[nodiscard]] auto BuildHistoryDisplayLine(
+    const TuiHistoryEntry& InEntry,
+    const std::string& InAuthorText = std::string()) -> std::string;
+
+[[nodiscard]] auto BuildHistoryDisplayLine(
+    const TuiHistoryEntry& InEntry,
+    int InMaximumDisplayCells) -> std::string;
+
 struct TuiHistoryBatchResult {
     std::vector<TuiHistoryEntry> entries;
     bool reachedEnd = false;

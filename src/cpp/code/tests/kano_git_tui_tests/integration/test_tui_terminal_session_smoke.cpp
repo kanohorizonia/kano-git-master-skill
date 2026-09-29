@@ -6,17 +6,24 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "audit_verification.hpp"
 #include "functional_test_support.hpp"
+#include "operation_audit.hpp"
+#include "tui_display_cells.hpp"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <condition_variable>
 #include <cstddef>
+#include <ctime>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -49,6 +56,7 @@ namespace {
 using namespace std::chrono_literals;
 
 constexpr auto kTerminalDeadline = 8s;
+constexpr auto kIdentityTerminalDeadline = 24s;
 constexpr std::size_t kMaximumTranscriptBytes = 64U * 1024U;
 
 auto TopBorderForColumns(const std::size_t InColumns) -> std::string {
@@ -833,6 +841,265 @@ class ScopedWindowsEnvironment final {
     bool hadPrevious_ = false;
 };
 
+class ScopedWindowsSandbox final {
+  public:
+    explicit ScopedWindowsSandbox(std::string InName)
+        : context_(
+              kano::git::tests::functional::CreateSandboxWorkspace(
+                  std::move(InName))) {}
+
+    ~ScopedWindowsSandbox() {
+        kano::git::tests::functional::RemoveSandboxWorkspace(context_);
+    }
+
+    ScopedWindowsSandbox(const ScopedWindowsSandbox&) = delete;
+    auto operator=(const ScopedWindowsSandbox&)
+        -> ScopedWindowsSandbox& = delete;
+
+    [[nodiscard]] auto Root() const -> const std::filesystem::path& {
+        return context_.root;
+    }
+
+  private:
+    kano::git::tests::functional::SandboxContext context_;
+};
+
+class ScopedWindowsCurrentDirectory final {
+  public:
+    explicit ScopedWindowsCurrentDirectory(
+        const std::filesystem::path& InCurrent)
+        : previous_(std::filesystem::current_path()) {
+        std::filesystem::current_path(InCurrent);
+    }
+
+    ~ScopedWindowsCurrentDirectory() {
+        std::error_code ignored;
+        std::filesystem::current_path(previous_, ignored);
+    }
+
+    ScopedWindowsCurrentDirectory(const ScopedWindowsCurrentDirectory&) = delete;
+    auto operator=(const ScopedWindowsCurrentDirectory&)
+        -> ScopedWindowsCurrentDirectory& = delete;
+
+  private:
+    std::filesystem::path previous_;
+};
+
+auto RequireWindowsCommandSuccess(
+    const kano::git::tests::functional::CommandResult& InResult,
+    const std::string_view InContext) -> void {
+    INFO(std::string(InContext));
+    INFO("exit=" << InResult.exitCode);
+    INFO("stdout=" << InResult.stdoutText);
+    INFO("stderr=" << InResult.stderrText);
+    REQUIRE(InResult.exitCode == 0);
+}
+
+auto WriteWindowsFixtureFile(
+    const std::filesystem::path& InPath,
+    const std::string_view InText) -> void {
+    std::filesystem::create_directories(InPath.parent_path());
+    std::ofstream stream(InPath, std::ios::binary | std::ios::trunc);
+    REQUIRE(stream.good());
+    stream.write(InText.data(), static_cast<std::streamsize>(InText.size()));
+    REQUIRE(stream.good());
+}
+
+auto WindowsUtf8PathText(const std::filesystem::path& InPath) -> std::string {
+#if defined(_WIN32)
+    const auto value = InPath.generic_u8string();
+    return {value.begin(), value.end()};
+#else
+    return InPath.generic_string();
+#endif
+}
+
+auto InitializeWindowsFixtureRepository(
+    const std::filesystem::path& InRepository) -> void {
+    using namespace kano::git::tests::functional;
+    std::filesystem::create_directories(InRepository);
+    RequireWindowsCommandSuccess(
+        RunGit({"init", "."}, InRepository),
+        "initialize live-resize repository");
+    RequireWindowsCommandSuccess(
+        RunGit({"config", "user.name", "KOG TUI Resize Test"}, InRepository),
+        "configure live-resize repository user name");
+    RequireWindowsCommandSuccess(
+        RunGit({"config", "user.email", "kog-tui-resize@example.invalid"},
+            InRepository),
+        "configure live-resize repository user email");
+    WriteWindowsFixtureFile(
+        InRepository / "README.md", "KOG-BUG-0109 live resize fixture\n");
+    RequireWindowsCommandSuccess(
+        RunGit({"add", "README.md"}, InRepository),
+        "stage live-resize repository fixture");
+    RequireWindowsCommandSuccess(
+        RunGit({"commit", "-m", "seed live-resize repository"}, InRepository),
+        "commit live-resize repository fixture");
+}
+
+auto CurrentWindowsAuditFixtureUtc() -> std::string {
+    const auto now = std::chrono::system_clock::now();
+    const auto value = std::chrono::system_clock::to_time_t(now);
+    std::tm utc{};
+    gmtime_s(&utc, &value);
+    char buffer[32]{};
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &utc);
+    return buffer;
+}
+
+struct WindowsLiveResizeAuditEvidence final {
+    std::filesystem::path workspace;
+    std::filesystem::path planFile;
+    std::string runId;
+    std::string receiptId;
+    std::string repositoryToken;
+    std::string compactRunId;
+    std::string compactReceiptId;
+};
+
+auto CreateWindowsLiveResizeAuditEvidence(
+    const std::filesystem::path& InSandboxRoot)
+    -> WindowsLiveResizeAuditEvidence {
+    using namespace kano::git::commands;
+    using namespace kano::git::tests::functional;
+
+    const std::string repositoryToken =
+        std::string{"\xE6\xB8\xAC\xE8\xA9\xA6"} + "-a" +
+        std::string{"\xCC\x84"} + "-" +
+        std::string{"\xF0\x9F\xAA\x90"};
+    const auto workspace = (InSandboxRoot /
+        std::filesystem::u8path("workspace-" + repositoryToken)).lexically_normal();
+    const auto auditTarget =
+        (workspace / std::filesystem::u8path(repositoryToken)).lexically_normal();
+
+    InitializeWindowsFixtureRepository(workspace);
+    InitializeWindowsFixtureRepository(auditTarget);
+    WriteWindowsFixtureFile(
+        workspace / ".kano" / "kog_config.toml",
+        "[plan_ai]\ncommit_generation_mode = \"adaptive\"\n");
+    WriteWindowsFixtureFile(
+        workspace / ".gitmodules",
+        "[submodule \"" + repositoryToken + "\"]\n" +
+        "\tpath = " + repositoryToken + "\n" +
+        "\turl = ./" + repositoryToken + "\n");
+    RequireWindowsCommandSuccess(
+        RunGit({"add", ".gitmodules"}, workspace),
+        "stage live-resize repository inventory");
+    RequireWindowsCommandSuccess(
+        RunGit({"commit", "-m", "register audit target"}, workspace),
+        "commit live-resize repository inventory");
+    RequireWindowsCommandSuccess(
+        RunKog({
+            "discover",
+            "--repo-root",
+            WindowsUtf8PathText(workspace),
+            "--format",
+            "json",
+            "--full",
+            "--unregistered-depth",
+            "2",
+            "--no-cache",
+        }, workspace),
+        "create trusted live-resize workspace manifest");
+
+    constexpr char kPlanId[] = "kog-bug-0109-resize-plan";
+    constexpr char kRunId[] = "kog-bug-0109-resize-run";
+    const auto planFile = workspace / "audit-plan.json";
+    const auto planBytes = nlohmann::json({
+        {"meta", {
+            {"plan_id", kPlanId},
+            {"correlation", {
+                {"mode", "koa"},
+                {"product_id", "kog"},
+                {"topic_id", "kog-bug-0109"},
+                {"item_id", "live-resize"},
+                {"work_order_id", "kog-bug-0109"},
+                {"request_id", "conpty-identity"},
+                {"run_id", kRunId},
+                {"parent_run_id", "kog-bug-0109-parent"},
+                {"producer_id", "kano-git-tui-tests"},
+                {"route_id", "windows-conpty"},
+                {"attempt", 1},
+            }},
+        }},
+    }).dump() + "\n";
+    WriteWindowsFixtureFile(planFile, planBytes);
+
+    OperationAuditSpec spec;
+    spec.workspaceRoot = workspace;
+    spec.sourcePath = planFile;
+    spec.inputIdentity =
+        WindowsUtf8PathText(std::filesystem::weakly_canonical(planFile));
+    spec.inputKind = "commit-plan";
+    spec.route = "commit-push.plan";
+    spec.planId = std::string(kPlanId);
+    spec.sourceBytes = planBytes;
+    spec.frozenBytes = planBytes;
+    spec.frozenFileName = "frozen-plan.json";
+    spec.correlation.mode = "koa";
+    spec.correlation.productId = "kog";
+    spec.correlation.topicId = "kog-bug-0109";
+    spec.correlation.itemId = "live-resize";
+    spec.correlation.workOrderId = "kog-bug-0109";
+    spec.correlation.requestId = "conpty-identity";
+    spec.correlation.runId = std::string(kRunId);
+    spec.correlation.parentRunId = "kog-bug-0109-parent";
+    spec.correlation.producerId = "kano-git-tui-tests";
+    spec.correlation.routeId = "windows-conpty";
+    spec.correlation.attempt = 1;
+
+    std::string error;
+    auto audit = OperationAuditContext::Reserve(spec, &error);
+    INFO(error);
+    REQUIRE(audit);
+    const auto before = audit->Capture(auditTarget);
+    REQUIRE(audit->Append(
+        "tui.live-resize.identity",
+        auditTarget,
+        before,
+        CurrentWindowsAuditFixtureUtc(),
+        0,
+        &error));
+    INFO(error);
+    REQUIRE(audit->Finalize(0, &error));
+    audit.reset();
+
+    const auto read = ReadOperationAuditVerification({
+        .workspaceRoot = workspace,
+        .planFile = planFile.filename(),
+        .runId = std::string(kRunId),
+        .attempt = 1,
+    });
+    INFO(read.diagnostic);
+    REQUIRE(read.verified());
+    REQUIRE(read.run.has_value());
+    REQUIRE(read.run->runId == kRunId);
+    REQUIRE(read.run->receiptId.size() == 64U);
+    REQUIRE(std::all_of(
+        read.run->receiptId.begin(), read.run->receiptId.end(),
+        [](const unsigned char InByte) {
+            return std::isxdigit(InByte) != 0;
+        }));
+    REQUIRE(std::any_of(
+        read.run->repositories.begin(), read.run->repositories.end(),
+        [](const auto& InRepository) {
+            return InRepository.repositoryId.size() == 43U &&
+                InRepository.repositoryId.starts_with("repository-");
+        }));
+    return {
+        .workspace = workspace,
+        .planFile = planFile.filename(),
+        .runId = read.run->runId,
+        .receiptId = read.run->receiptId,
+        .repositoryToken = repositoryToken,
+        .compactRunId = TuiDisplayTruncateMiddle(
+            read.run->runId, 10, ".."),
+        .compactReceiptId = TuiDisplayTruncateMiddle(
+            read.run->receiptId, 10, ".."),
+    };
+}
+
 class WindowsHandle final {
   public:
     WindowsHandle() = default;
@@ -1002,8 +1269,10 @@ class WindowsConPtyHostController final {
         const std::filesystem::path& InWrapper,
         const std::filesystem::path& InProduction,
         const bool bInEscape,
-        const bool bInStallBeforeClose)
-        : deadline_(std::chrono::steady_clock::now() + kTerminalDeadline) {
+        const bool bInStallBeforeClose,
+        const WindowsLiveResizeAuditEvidence* InIdentityEvidence = nullptr)
+        : deadline_(std::chrono::steady_clock::now() +
+              (InIdentityEvidence != nullptr ? kIdentityTerminalDeadline : kTerminalDeadline)) {
         WindowsHostLaunchResources resources;
         resources.deadline = deadline_;
         HANDLE stdoutRead = nullptr;
@@ -1055,11 +1324,28 @@ class WindowsConPtyHostController final {
         startup.StartupInfo.hStdOutput = resources.stdoutWrite.Get();
         startup.StartupInfo.hStdError = resources.stderrWrite.Get();
         startup.lpAttributeList = list;
-        std::wstring command = QuoteWindowsArgument(InHost.wstring()) + L" " +
-            (bInEscape ? L"escape" : L"q") + L" " +
-            QuoteWindowsArgument(InWrapper.wstring()) + L" " +
-            QuoteWindowsArgument(InProduction.wstring());
-        if (bInStallBeforeClose) command += L" --test-stall-before-close";
+        std::wstring command = QuoteWindowsArgument(InHost.wstring());
+        if (InIdentityEvidence != nullptr) {
+            const auto widenAscii = [](const std::string& InValue) {
+                return std::wstring(InValue.begin(), InValue.end());
+            };
+            const auto repositoryToken = std::filesystem::u8path(
+                InIdentityEvidence->repositoryToken).wstring();
+            command += L" identity " +
+                QuoteWindowsArgument(InWrapper.wstring()) + L" " +
+                QuoteWindowsArgument(InProduction.wstring()) + L" " +
+                QuoteWindowsArgument(InIdentityEvidence->planFile.wstring()) + L" " +
+                QuoteWindowsArgument(repositoryToken) + L" " +
+                QuoteWindowsArgument(widenAscii(InIdentityEvidence->runId)) + L" " +
+                QuoteWindowsArgument(widenAscii(InIdentityEvidence->receiptId)) + L" " +
+                QuoteWindowsArgument(widenAscii(InIdentityEvidence->compactRunId)) + L" " +
+                QuoteWindowsArgument(widenAscii(InIdentityEvidence->compactReceiptId));
+        } else {
+            command += L" " + (bInEscape ? std::wstring(L"escape") : L"q") + L" " +
+                QuoteWindowsArgument(InWrapper.wstring()) + L" " +
+                QuoteWindowsArgument(InProduction.wstring());
+            if (bInStallBeforeClose) command += L" --test-stall-before-close";
+        }
         PROCESS_INFORMATION process{};
         REQUIRE(CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
             CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
@@ -1083,7 +1369,7 @@ class WindowsConPtyHostController final {
         stdoutWrite_.Reset();
         stderrWrite_.Reset();
         stdinNull_.Reset();
-        const auto resize = evidence_.BeginResize(121U);
+        const auto resize = evidence_.BeginResize(120U);
         evidence_.CommitResize(resize);
     }
 
@@ -1170,7 +1456,7 @@ class WindowsConPtyHostController final {
         return evidence_.SawProductionFrame();
     }
     [[nodiscard]] auto SawResizedFrame() const -> bool {
-        return evidence_.SawResizedFrame(121U);
+        return evidence_.SawResizedFrame(120U);
     }
     [[nodiscard]] auto TranscriptTotalBytes() const -> std::size_t {
         return transcript_.TotalBytes();
@@ -1308,6 +1594,39 @@ TEST_CASE(
     SECTION("Escape exits after live resize and production UTF-8 rendering") {
         RunWindowsTerminalExitSmoke(true, true);
     }
+}
+
+TEST_CASE(
+    "Windows ConPTY live resize preserves selected repository and verified audit identity",
+    "[integration][tui_terminal_session][production-path][KOG-BUG-0109]") {
+    const ScopedWindowsSandbox sandbox("kog-bug-0109-live-resize-identity");
+    const auto expected = CreateWindowsLiveResizeAuditEvidence(sandbox.Root());
+    const ScopedWindowsEnvironment testMode("KOG_TEST_MODE", "1");
+    const ScopedWindowsCurrentDirectory currentDirectory(expected.workspace);
+
+    const auto binaries =
+        kano::git::tests::functional::ResolveKogBinaryPath().parent_path();
+    WindowsConPtyHostController controller(
+        binaries / "kano_git_tui_conpty_host.exe",
+        binaries / "kano_git_tui_terminal_state_wrapper.exe",
+        StandaloneTuiBinary(), false, false, &expected);
+    const auto outcome = controller.Run(false);
+    const auto transcript = controller.Transcript();
+    const std::string selectedNeedle = "repo=" + expected.repositoryToken;
+    const std::string runNeedle = "run=" + expected.compactRunId;
+    const std::string receiptNeedle = "receipt=" + expected.compactReceiptId;
+    INFO("stage=selected-repository needle=" << selectedNeedle);
+    INFO("stage=linked-audit-run needle=" << runNeedle);
+    INFO("stage=linked-audit-receipt needle=" << receiptNeedle);
+    INFO("bounded ConPTY transcript: total=" << controller.TranscriptTotalBytes()
+         << "; omitted=" << controller.TranscriptOmittedBytes()
+         << "\n" << transcript
+         << "\nhost status:\n" << controller.Status());
+    REQUIRE(outcome == WindowsHostOutcome::Success);
+    REQUIRE(transcript.find(selectedNeedle) != std::string::npos);
+    REQUIRE(transcript.find(runNeedle) != std::string::npos);
+    REQUIRE(transcript.find(receiptNeedle) != std::string::npos);
+    CHECK(controller.JobIsEmpty());
 }
 
 TEST_CASE(

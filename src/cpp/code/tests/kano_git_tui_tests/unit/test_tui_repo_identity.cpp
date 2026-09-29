@@ -60,6 +60,24 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "KOG-BUG-0109 TUI repository identity preserves Unicode path bytes",
+    "[unit][tui_repo_identity][unicode][windows][cross-platform][KOG-BUG-0109]") {
+    TempDirectory fixture;
+    const std::string repositoryToken =
+        std::string{"\xE6\xB8\xAC\xE8\xA9\xA6"} + "-a" +
+        std::string{"\xCC\x84"} + "-" +
+        std::string{"\xF0\x9F\xAA\x90"};
+    const auto repository =
+        fixture.Path() / fs::u8path(repositoryToken);
+    fs::create_directories(repository);
+
+    const auto normalized = NormalizeRepoIdentityKey(repository);
+    REQUIRE(normalized.find(repositoryToken) != std::string::npos);
+    REQUIRE_NOTHROW(ResolveStableRepoIdentityKey(repository));
+    REQUIRE_FALSE(ResolveStableRepoIdentityKey(repository).empty());
+}
+
+TEST_CASE(
     "TUI repository identity resolves symlink and host case aliases once",
     "[unit][tui_repo_identity][KG-TSK-0070]") {
     TempDirectory fixture;

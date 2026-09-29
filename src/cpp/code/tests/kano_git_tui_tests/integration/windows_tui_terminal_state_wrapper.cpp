@@ -213,16 +213,22 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
         InArguments[1][0] == L'\0') {
         return PrintFailure("missing-production-binary");
     }
-    if (InArgumentCount != 5 || InArguments[2] == nullptr ||
-        std::wcscmp(InArguments[2], L"--test-cancel-ack") != 0) {
-        return PrintFailure("missing-test-cancel-ack");
+    const bool identityMode = InArgumentCount == 3 &&
+        InArguments[2] != nullptr &&
+        std::wcscmp(InArguments[2], L"--test-live-identity") == 0;
+    const bool cancellationMode = InArgumentCount == 5 &&
+        InArguments[2] != nullptr &&
+        std::wcscmp(InArguments[2], L"--test-cancel-ack") == 0;
+    if (!identityMode && !cancellationMode) {
+        return PrintFailure("missing-test-mode");
     }
     HANDLE armedEvent = nullptr;
     HANDLE acknowledgementEvent = nullptr;
     DWORD failureError = ERROR_SUCCESS;
-    if (!ParseInheritedEventHandle(InArguments[3], armedEvent, failureError) ||
-        !ParseInheritedEventHandle(InArguments[4], acknowledgementEvent, failureError) ||
-        armedEvent == acknowledgementEvent) {
+    if (cancellationMode &&
+        (!ParseInheritedEventHandle(InArguments[3], armedEvent, failureError) ||
+         !ParseInheritedEventHandle(InArguments[4], acknowledgementEvent, failureError) ||
+         armedEvent == acknowledgementEvent)) {
         return PrintWin32Failure("invalid-cancellation-event-handle", failureError);
     }
 
@@ -231,13 +237,17 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
     if (!OpenConsoleDevices(consoleInput, consoleOutput, failureError)) {
         return PrintWin32Failure("console-device-open-before-launch", failureError);
     }
-    if (SetEnvironmentVariableW(L"KOG_TEST_MODE", L"1") == 0 ||
-        SetEnvironmentVariableW(
-            L"KOG_TUI_TEST_STARTUP_CANCEL_ACK", L"1") == 0 ||
-        SetEnvironmentVariableW(L"KOG_TUI_TEST_STARTUP_CANCEL_ARMED_HANDLE",
-            std::to_wstring(reinterpret_cast<std::uintptr_t>(armedEvent)).c_str()) == 0 ||
-        SetEnvironmentVariableW(L"KOG_TUI_TEST_STARTUP_CANCEL_ACK_HANDLE",
-            std::to_wstring(reinterpret_cast<std::uintptr_t>(acknowledgementEvent)).c_str()) == 0) {
+    if (SetEnvironmentVariableW(L"KOG_TEST_MODE", L"1") == 0) {
+        return PrintWin32Failure(
+            "production-test-environment-unavailable", GetLastError());
+    }
+    if (cancellationMode &&
+        (SetEnvironmentVariableW(
+             L"KOG_TUI_TEST_STARTUP_CANCEL_ACK", L"1") == 0 ||
+         SetEnvironmentVariableW(L"KOG_TUI_TEST_STARTUP_CANCEL_ARMED_HANDLE",
+             std::to_wstring(reinterpret_cast<std::uintptr_t>(armedEvent)).c_str()) == 0 ||
+         SetEnvironmentVariableW(L"KOG_TUI_TEST_STARTUP_CANCEL_ACK_HANDLE",
+             std::to_wstring(reinterpret_cast<std::uintptr_t>(acknowledgementEvent)).c_str()) == 0)) {
         return PrintWin32Failure(
             "production-test-environment-unavailable", GetLastError());
     }
@@ -250,8 +260,11 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
     }
 
     std::wstring commandLine = QuoteArgument(InArguments[1]);
-    HANDLE inheritedHandles[] = {consoleInput.Get(), consoleOutput.Get(), armedEvent,
-        acknowledgementEvent};
+    std::vector<HANDLE> inheritedHandles{consoleInput.Get(), consoleOutput.Get()};
+    if (cancellationMode) {
+        inheritedHandles.push_back(armedEvent);
+        inheritedHandles.push_back(acknowledgementEvent);
+    }
     SIZE_T attributeBytes = 0;
     InitializeProcThreadAttributeList(nullptr, 1, 0, &attributeBytes);
     std::vector<std::byte> attributes(attributeBytes);
@@ -268,7 +281,8 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
     } cleanup{attributeList};
     if (UpdateProcThreadAttribute(
             attributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-            inheritedHandles, sizeof(inheritedHandles), nullptr, nullptr) == 0) {
+            inheritedHandles.data(), inheritedHandles.size() * sizeof(HANDLE),
+            nullptr, nullptr) == 0) {
         return PrintWin32Failure("production-handle-list-init-failed", GetLastError());
     }
 
@@ -290,10 +304,10 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
 
     // This is an independent diagnostic deadline.  The outer controller is
     // the sole hard safety bound for this process tree.
-    constexpr DWORD kProductionExitTimeoutMs = 5'000;
+    const DWORD productionExitTimeoutMs = identityMode ? 20'000U : 5'000U;
     constexpr DWORD kProductionTerminateJoinTimeoutMs = 500;
     const auto waitResult =
-        WaitForSingleObject(process.hProcess, kProductionExitTimeoutMs);
+        WaitForSingleObject(process.hProcess, productionExitTimeoutMs);
     if (waitResult != WAIT_OBJECT_0) {
         (void)TerminateProcess(process.hProcess, 253);
         const DWORD terminated = WaitForSingleObject(

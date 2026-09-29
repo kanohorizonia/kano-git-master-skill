@@ -7,15 +7,19 @@
 #include <windows.h>
 #include <consoleapi3.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -32,8 +36,8 @@ constexpr DWORD kExitAttributes = 12;
 constexpr DWORD kExitLaunch = 13;
 constexpr DWORD kExitOutput = 14;
 constexpr DWORD kExitFirstFrame = 15;
-constexpr DWORD kExitResize = 16;
-constexpr DWORD kExitResizedFrame = 17;
+constexpr DWORD kExitNarrowResize = 16;
+constexpr DWORD kExitNarrowFrame = 17;
 constexpr DWORD kExitInput = 18;
 constexpr DWORD kExitChildWait = 19;
 constexpr DWORD kExitChildStatus = 20;
@@ -41,14 +45,34 @@ constexpr DWORD kExitOutputEof = 21;
 constexpr DWORD kExitInternal = 22;
 constexpr DWORD kExitCleanupEvidence = 23;
 constexpr DWORD kExitCancellationHarness = 24;
+constexpr DWORD kExitRestoreResize = 25;
+constexpr DWORD kExitRestoredFrame = 26;
+constexpr DWORD kExitCompactResize = 27;
+constexpr DWORD kExitCompactFrame = 28;
+constexpr DWORD kExitMinimumResize = 29;
+constexpr DWORD kExitMinimumFrame = 30;
+constexpr DWORD kExitInventoryFrame = 31;
+constexpr DWORD kExitSelectedInput = 32;
+constexpr DWORD kExitSelectedFrame = 33;
+constexpr DWORD kExitAuditInput = 34;
+constexpr DWORD kExitLinkedIdentityFrame = 35;
+constexpr DWORD kExitPreviewCloseInput = 36;
+constexpr DWORD kExitPreviewCloseFrame = 37;
 constexpr DWORD kNoFailure = MAXDWORD;
-constexpr short kResizeColumns = 121;
-constexpr short kResizeRows = 37;
-constexpr std::size_t kHorizontalBorderGlyphs =
-    static_cast<std::size_t>(kResizeColumns) - 2U;
+constexpr short kInitialColumns = 120;
+constexpr short kInitialRows = 36;
+constexpr short kCompactColumns = 72;
+constexpr short kCompactRows = 22;
+constexpr short kNarrowColumns = 40;
+constexpr short kNarrowRows = 12;
+constexpr short kMinimumColumns = 24;
+constexpr short kMinimumRows = 12;
+constexpr short kRestoreColumns = 120;
+constexpr short kRestoreRows = 36;
+constexpr std::size_t kMaximumQaCaptureBytes = 16U << 20U;
 constexpr std::size_t kUtf8BoxGlyphBytes = 3U;
 constexpr auto kHostDeadline = std::chrono::milliseconds(6'500);
-static_assert(kHorizontalBorderGlyphs == 119U);
+constexpr auto kIdentityHostDeadline = std::chrono::milliseconds(22'000);
 
 class Handle final {
   public:
@@ -113,9 +137,76 @@ class Needle final {
     bool found_ = false;
 };
 
-auto ResizedFrame() -> std::string {
+class ResizeSemanticEvidence final {
+  public:
+    ResizeSemanticEvidence(std::string InResizeMarker,
+                           std::string InAudit,
+                           std::string InIdentity,
+                           std::string InGuidance,
+                           std::string InStatus)
+        : resize_(std::move(InResizeMarker)),
+          audit_(std::move(InAudit)),
+          identity_(std::move(InIdentity)),
+          guidance_(std::move(InGuidance)),
+          status_(std::move(InStatus)) {}
+
+    auto Consume(const std::string_view InBytes) -> void {
+        for (const char byte : InBytes) {
+            const std::string_view oneByte(&byte, 1U);
+            resize_.Consume(oneByte);
+            if (!resize_.Found()) {
+                continue;
+            }
+            audit_.Consume(oneByte);
+            identity_.Consume(oneByte);
+            guidance_.Consume(oneByte);
+            status_.Consume(oneByte);
+        }
+    }
+
+    [[nodiscard]] auto Found() const -> bool {
+        return resize_.Found() && audit_.Found() && identity_.Found() &&
+            guidance_.Found() && status_.Found();
+    }
+
+  private:
+    Needle resize_;
+    Needle audit_;
+    Needle identity_;
+    Needle guidance_;
+    Needle status_;
+};
+
+class FrameSemanticEvidence final {
+  public:
+    FrameSemanticEvidence() = default;
+    explicit FrameSemanticEvidence(std::vector<std::string> InNeedles) {
+        needles_.reserve(InNeedles.size());
+        for (auto& needle : InNeedles) {
+            needles_.emplace_back(std::move(needle));
+        }
+    }
+
+    auto Consume(const std::string_view InBytes) -> void {
+        for (auto& needle : needles_) {
+            needle.Consume(InBytes);
+        }
+    }
+
+    [[nodiscard]] auto Found() const -> bool {
+        return !needles_.empty() &&
+            std::all_of(
+                needles_.begin(), needles_.end(),
+                [](const Needle& InNeedle) { return InNeedle.Found(); });
+    }
+
+  private:
+    std::vector<Needle> needles_;
+};
+
+auto TopBorderForColumns(const short InColumns) -> std::string {
     std::string value = "\xE2\x95\xAD"; // ╭
-    for (short column = 2; column < kResizeColumns; ++column) {
+    for (short column = 2; column < InColumns; ++column) {
         value += "\xE2\x94\x80"; // ─
     }
     value += "\xE2\x95\xAE"; // ╮
@@ -152,6 +243,162 @@ auto Quote(const std::wstring& InValue) -> std::wstring {
 
 [[nodiscard]] auto TestModeEnabled() -> bool {
     return EnvironmentIsOne("KOG_TEST_MODE");
+}
+
+[[nodiscard]] auto QaCaptureDirectory()
+    -> std::optional<std::filesystem::path> {
+    if (!TestModeEnabled()) return std::nullopt;
+    const DWORD required = GetEnvironmentVariableW(
+        L"KOG_TUI_QA_CAPTURE_DIR", nullptr, 0U);
+    if (required <= 1U || required > 32'768U) return std::nullopt;
+    std::vector<wchar_t> buffer(required, L'\0');
+    const DWORD written = GetEnvironmentVariableW(
+        L"KOG_TUI_QA_CAPTURE_DIR", buffer.data(), required);
+    if (written == 0U || written >= required) return std::nullopt;
+    auto result = std::filesystem::path(
+        std::wstring(buffer.data(), static_cast<std::size_t>(written)));
+    if (result.empty()) return std::nullopt;
+    return result.lexically_normal();
+}
+
+auto WriteQaCapture(
+    const std::filesystem::path& InDirectory,
+    const std::string_view InLabel,
+    const std::string_view InBytes,
+    const short InColumns,
+    const short InRows,
+    DWORD& OutError) -> bool {
+    std::error_code directoryError;
+    std::filesystem::create_directories(InDirectory, directoryError);
+    if (directoryError) {
+        OutError = static_cast<DWORD>(directoryError.value());
+        return false;
+    }
+    auto stem = InDirectory / std::filesystem::u8path(InLabel);
+    auto ansiPath = stem;
+    ansiPath += ".ansi";
+    std::ofstream ansi(
+        ansiPath, std::ios::binary | std::ios::out | std::ios::trunc);
+    if (!ansi) {
+        OutError = ERROR_OPEN_FAILED;
+        return false;
+    }
+    ansi.write(InBytes.data(), static_cast<std::streamsize>(InBytes.size()));
+    if (!ansi) {
+        OutError = ERROR_WRITE_FAULT;
+        return false;
+    }
+    ansi.close();
+
+    auto metadataPath = stem;
+    metadataPath += ".json";
+    std::ofstream metadata(
+        metadataPath, std::ios::binary | std::ios::out | std::ios::trunc);
+    if (!metadata) {
+        OutError = ERROR_OPEN_FAILED;
+        return false;
+    }
+    metadata << "{\"cols\":" << InColumns
+             << ",\"rows\":" << InRows
+             << ",\"ansi_bytes\":" << InBytes.size() << "}\n";
+    if (!metadata) {
+        OutError = ERROR_WRITE_FAULT;
+        return false;
+    }
+    OutError = ERROR_SUCCESS;
+    return true;
+}
+
+[[nodiscard]] auto BoundedAsciiArgument(
+    const wchar_t* InValue,
+    const std::size_t InMaximum) -> std::optional<std::string> {
+    if (InValue == nullptr || InValue[0] == L'\0') return std::nullopt;
+    std::string value;
+    value.reserve(std::min<std::size_t>(InMaximum, 128U));
+    for (const wchar_t character : std::wstring_view(InValue)) {
+        if (character < 0x21 || character > 0x7e ||
+            value.size() >= InMaximum) {
+            return std::nullopt;
+        }
+        value.push_back(static_cast<char>(character));
+    }
+    return value;
+}
+
+[[nodiscard]] auto BoundedUtf8Argument(
+    const wchar_t* InValue,
+    const std::size_t InMaximumBytes) -> std::optional<std::string> {
+    if (InValue == nullptr || InValue[0] == L'\0') return std::nullopt;
+    const std::wstring_view input(InValue);
+    if (input.size() > InMaximumBytes) return std::nullopt;
+    const int required = WideCharToMultiByte(
+        CP_UTF8,
+        WC_ERR_INVALID_CHARS,
+        input.data(),
+        static_cast<int>(input.size()),
+        nullptr,
+        0,
+        nullptr,
+        nullptr);
+    if (required <= 0 ||
+        static_cast<std::size_t>(required) > InMaximumBytes) {
+        return std::nullopt;
+    }
+    std::string value(static_cast<std::size_t>(required), '\0');
+    if (WideCharToMultiByte(
+            CP_UTF8, WC_ERR_INVALID_CHARS, input.data(),
+            static_cast<int>(input.size()), value.data(), required,
+            nullptr, nullptr) != required ||
+        std::any_of(value.begin(), value.end(), [](const unsigned char InByte) {
+            return InByte < 0x21U || InByte == 0x7fU;
+        })) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+[[nodiscard]] auto IsSafePlanFileArgument(
+    const std::string_view InValue) -> bool {
+    return !InValue.empty() && InValue.size() <= 128U &&
+        std::all_of(
+            InValue.begin(), InValue.end(), [](const unsigned char InByte) {
+                return (InByte >= 'a' && InByte <= 'z') ||
+                    (InByte >= 'A' && InByte <= 'Z') ||
+                    (InByte >= '0' && InByte <= '9') ||
+                    InByte == '.' || InByte == '_' || InByte == '-';
+            });
+}
+
+[[nodiscard]] auto IsHexReceipt(const std::string_view InValue) -> bool {
+    return InValue.size() == 64U &&
+        std::all_of(
+            InValue.begin(), InValue.end(), [](const unsigned char InByte) {
+                return (InByte >= '0' && InByte <= '9') ||
+                    (InByte >= 'a' && InByte <= 'f') ||
+                    (InByte >= 'A' && InByte <= 'F');
+            });
+}
+
+auto WriteAll(const HANDLE InPipe, const std::string_view InBytes,
+              DWORD& OutError) -> bool {
+    std::size_t offset = 0U;
+    while (offset < InBytes.size()) {
+        DWORD written = 0U;
+        const auto remaining = InBytes.size() - offset;
+        const BOOL wrote = WriteFile(
+            InPipe,
+            InBytes.data() + offset,
+            static_cast<DWORD>(std::min<std::size_t>(
+                remaining, static_cast<std::size_t>(MAXDWORD))),
+            &written,
+            nullptr);
+        if (!wrote || written == 0U) {
+            OutError = wrote ? ERROR_WRITE_FAULT : GetLastError();
+            return false;
+        }
+        offset += static_cast<std::size_t>(written);
+    }
+    return true;
 }
 
 auto PrintResult(const bool InOk, const DWORD InCode, const DWORD InWin32,
@@ -202,23 +449,29 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
     DWORD childExit = STILL_ACTIVE;
     bool outputEof = false;
     bool closeReturned = false;
-    if (InArgumentCount != 4 && InArgumentCount != 5) {
+    const bool identityMode = InArgumentCount == 10 &&
+        std::wcscmp(InArguments[1], L"identity") == 0;
+    if (!identityMode && InArgumentCount != 4 && InArgumentCount != 5) {
         return PrintResult(false, code, win32, childExit, outputEof);
     }
     const bool sendEscape = std::wcscmp(InArguments[1], L"escape") == 0;
-    if (!sendEscape && std::wcscmp(InArguments[1], L"q") != 0) {
+    if (!identityMode && !sendEscape &&
+        std::wcscmp(InArguments[1], L"q") != 0) {
         return PrintResult(false, code, win32, childExit, outputEof);
     }
-    const bool stallBeforeClose = InArgumentCount == 5 &&
+    const bool stallBeforeClose = !identityMode && InArgumentCount == 5 &&
         std::wcscmp(InArguments[4], L"--test-stall-before-close") == 0;
-    if (InArgumentCount == 5 && !stallBeforeClose) {
+    if (!identityMode && InArgumentCount == 5 && !stallBeforeClose) {
         return PrintResult(false, code, win32, childExit, outputEof);
     }
     // This helper's causal exit proof depends on the deterministic production
     // cancellation acknowledgement.  Fail closed outside the explicit test
     // harness instead of weakening cleanup ordering to timing assumptions.
+    const bool cancellationHarness =
+        EnvironmentIsOne("KOG_TUI_TEST_STARTUP_CANCEL_ACK");
     if (!TestModeEnabled() ||
-        !EnvironmentIsOne("KOG_TUI_TEST_STARTUP_CANCEL_ACK")) {
+        (!identityMode && !cancellationHarness) ||
+        (identityMode && cancellationHarness)) {
         return PrintResult(false, code, ERROR_BAD_ENVIRONMENT,
             childExit, outputEof);
     }
@@ -227,13 +480,55 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
     }
     code = kNoFailure;
 
-    const std::string resizedNeedle = ResizedFrame();
-    if (resizedNeedle.size() !=
-        static_cast<std::size_t>(kResizeColumns) * kUtf8BoxGlyphBytes) {
+    std::optional<std::string> planFile;
+    std::optional<std::string> repositoryToken;
+    std::optional<std::string> runId;
+    std::optional<std::string> receiptId;
+    std::optional<std::string> compactRunId;
+    std::optional<std::string> compactReceiptId;
+    if (identityMode) {
+        planFile = BoundedAsciiArgument(InArguments[4], 128U);
+        repositoryToken = BoundedUtf8Argument(InArguments[5], 128U);
+        runId = BoundedAsciiArgument(InArguments[6], 128U);
+        receiptId = BoundedAsciiArgument(InArguments[7], 64U);
+        compactRunId = BoundedAsciiArgument(InArguments[8], 10U);
+        compactReceiptId = BoundedAsciiArgument(InArguments[9], 10U);
+        if (!planFile.has_value() ||
+            !repositoryToken.has_value() ||
+            !runId.has_value() ||
+            !receiptId.has_value() ||
+            !compactRunId.has_value() ||
+            !compactReceiptId.has_value() ||
+            !IsSafePlanFileArgument(*planFile) ||
+            !IsHexReceipt(*receiptId) ||
+            compactRunId->size() != 10U ||
+            compactReceiptId->size() != 10U) {
+            return PrintResult(false, kExitUsage, ERROR_INVALID_DATA,
+                childExit, outputEof);
+        }
+    }
+
+    const std::string compactNeedle = TopBorderForColumns(kCompactColumns);
+    const std::string narrowNeedle = TopBorderForColumns(kNarrowColumns);
+    const std::string minimumNeedle = TopBorderForColumns(kMinimumColumns);
+    const std::string restoredNeedle = TopBorderForColumns(kRestoreColumns);
+    if (compactNeedle.size() !=
+            static_cast<std::size_t>(kCompactColumns) * kUtf8BoxGlyphBytes ||
+        narrowNeedle.size() !=
+            static_cast<std::size_t>(kNarrowColumns) * kUtf8BoxGlyphBytes ||
+        minimumNeedle.size() !=
+            static_cast<std::size_t>(kMinimumColumns) * kUtf8BoxGlyphBytes ||
+        restoredNeedle.size() !=
+            static_cast<std::size_t>(kRestoreColumns) * kUtf8BoxGlyphBytes) {
         return PrintResult(false, kExitInternal, ERROR_INVALID_DATA,
             childExit, outputEof);
     }
-    const auto deadline = std::chrono::steady_clock::now() + kHostDeadline;
+    const auto deadline = std::chrono::steady_clock::now() +
+        (identityMode ? kIdentityHostDeadline : kHostDeadline);
+    const auto qaCaptureDirectory = identityMode
+        ? QaCaptureDirectory() : std::nullopt;
+    std::string qaCaptureBytes;
+    bool qaCaptureOverflow = false;
 
     HANDLE rawInputRead = nullptr;
     HANDLE rawInputWrite = nullptr;
@@ -270,21 +565,22 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
     }
     HPCON pseudoConsole = nullptr;
     const HRESULT conpty = CreatePseudoConsole(
-        COORD{100, 30}, inputRead.Get(), outputWrite.Get(), 0, &pseudoConsole);
+        COORD{kInitialColumns, kInitialRows}, inputRead.Get(), outputWrite.Get(), 0, &pseudoConsole);
     if (FAILED(conpty)) {
         return PrintResult(false, kExitConPty, Win32FromHresult(conpty), childExit, outputEof);
     }
     inputRead.Reset();
     outputWrite.Reset();
 
+    const DWORD attributeCount = identityMode ? 1U : 2U;
     SIZE_T bytes = 0U;
-    (void)InitializeProcThreadAttributeList(nullptr, 2, 0, &bytes);
+    (void)InitializeProcThreadAttributeList(nullptr, attributeCount, 0, &bytes);
     std::vector<std::byte> attributes(bytes);
     auto* list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributes.data());
     bool attributeInitialized = false;
     if (bytes != 0U) {
         attributeInitialized = InitializeProcThreadAttributeList(
-        list, 2, 0, &bytes) != FALSE;
+            list, attributeCount, 0, &bytes) != FALSE;
     }
     if (!attributeInitialized) {
         win32 = GetLastError();
@@ -301,14 +597,16 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
         ClosePseudoConsole(pseudoConsole);
         return PrintResult(false, kExitAttributes, win32, childExit, outputEof);
     }
-    HANDLE inheritedHandles[] = {cancellationArmed.Get(),
-        cancellationAcknowledged.Get()};
-    if (!UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-            inheritedHandles, sizeof(inheritedHandles), nullptr, nullptr)) {
-        win32 = GetLastError();
-        DeleteProcThreadAttributeList(list);
-        ClosePseudoConsole(pseudoConsole);
-        return PrintResult(false, kExitAttributes, win32, childExit, outputEof);
+    if (!identityMode) {
+        HANDLE inheritedHandles[] = {cancellationArmed.Get(),
+            cancellationAcknowledged.Get()};
+        if (!UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                inheritedHandles, sizeof(inheritedHandles), nullptr, nullptr)) {
+            win32 = GetLastError();
+            DeleteProcThreadAttributeList(list);
+            ClosePseudoConsole(pseudoConsole);
+            return PrintResult(false, kExitAttributes, win32, childExit, outputEof);
+        }
     }
     struct AttributeCleanup final {
         LPPROC_THREAD_ATTRIBUTE_LIST list;
@@ -321,18 +619,22 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
     std::wstring command = Quote(InArguments[2]);
     command += L" ";
     command += Quote(InArguments[3]);
-    command += L" --test-cancel-ack";
-    command += L" ";
-    command += std::to_wstring(
-        reinterpret_cast<std::uintptr_t>(cancellationArmed.Get()));
-    command += L" ";
-    command += std::to_wstring(
-        reinterpret_cast<std::uintptr_t>(cancellationAcknowledged.Get()));
+    if (identityMode) {
+        command += L" --test-live-identity";
+    } else {
+        command += L" --test-cancel-ack";
+        command += L" ";
+        command += std::to_wstring(
+            reinterpret_cast<std::uintptr_t>(cancellationArmed.Get()));
+        command += L" ";
+        command += std::to_wstring(
+            reinterpret_cast<std::uintptr_t>(cancellationAcknowledged.Get()));
+    }
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = sizeof(startup);
     startup.lpAttributeList = list;
     PROCESS_INFORMATION process{};
-    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
+    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, identityMode ? FALSE : TRUE,
             EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr, &startup.StartupInfo, &process)) {
         win32 = GetLastError();
         ClosePseudoConsole(pseudoConsole);
@@ -344,14 +646,21 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
     std::mutex mutex;
     std::condition_variable changed;
     Needle firstFrame("q/Escape exits");
-    Needle resizedFrame(resizedNeedle);
+    ResizeSemanticEvidence resizedFrame(
+        narrowNeedle, "AUDIT", "receipt=missing", "q quit", "status=");
+    FrameSemanticEvidence identityFrame(identityMode
+        ? std::vector<std::string>{*repositoryToken}
+        : std::vector<std::string>{});
     Needle altScreenExit("\x1b[?1049l");
     Needle terminalStateRestored("KOG_TUI_TERMINAL_STATE_RESTORED");
     bool resizePending = false;
     bool resizeCommitted = false;
+    bool identityPending = identityMode;
     bool inputPending = false;
     bool inputCommitted = false;
     bool outputComplete = false;
+    std::chrono::steady_clock::time_point lastOutputAt =
+        std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point outputCompletedAt{};
     DWORD outputError = ERROR_SUCCESS;
     DWORD forwardError = ERROR_SUCCESS;
@@ -393,8 +702,18 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
             }
             {
                 std::scoped_lock lock(mutex);
+                if (qaCaptureDirectory.has_value() && !qaCaptureOverflow) {
+                    if (qaCaptureBytes.size() + chunk.size() <=
+                        kMaximumQaCaptureBytes) {
+                        qaCaptureBytes.append(chunk);
+                    } else {
+                        qaCaptureOverflow = true;
+                    }
+                }
+                lastOutputAt = std::chrono::steady_clock::now();
                 firstFrame.Consume(chunk);
                 if (resizePending) resizedFrame.Consume(chunk);
+                if (identityPending) identityFrame.Consume(chunk);
                 if (inputPending) {
                     for (const char byte : chunk) {
                         const std::string_view oneByte(&byte, 1U);
@@ -421,15 +740,117 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
                 : (outputError == ERROR_SUCCESS ? ERROR_HANDLE_EOF : outputError);
         }
     }
-    if (code == kNoFailure) {
+    const auto captureQaStage = [&]
+        (const std::string_view InLabel,
+         const short InColumns,
+         const short InRows) {
+        if (!identityMode || code != kNoFailure ||
+            !qaCaptureDirectory.has_value()) {
+            return;
+        }
+        std::string snapshot;
+        {
+            constexpr auto kQuietInterval = std::chrono::milliseconds(150);
+            std::unique_lock lock(mutex);
+            auto quietAt = lastOutputAt + kQuietInterval;
+            while (std::chrono::steady_clock::now() < quietAt &&
+                   std::chrono::steady_clock::now() < deadline) {
+                (void)changed.wait_until(lock, std::min(quietAt, deadline));
+                quietAt = lastOutputAt + kQuietInterval;
+            }
+            if (qaCaptureOverflow) {
+                code = kExitInternal;
+                win32 = ERROR_BUFFER_OVERFLOW;
+                return;
+            }
+            if (std::chrono::steady_clock::now() < quietAt) {
+                code = kExitInternal;
+                win32 = ERROR_TIMEOUT;
+                return;
+            }
+            snapshot = qaCaptureBytes;
+        }
+        DWORD captureError = ERROR_SUCCESS;
+        if (!WriteQaCapture(*qaCaptureDirectory, InLabel, snapshot,
+                InColumns, InRows, captureError)) {
+            code = kExitInternal;
+            win32 = captureError;
+        }
+    };
+    const auto awaitIdentityFrame = [&](const DWORD InFrameFailure) {
+        if (!identityMode || code != kNoFailure) return;
+        std::unique_lock lock(mutex);
+        const bool observed = changed.wait_until(lock, deadline, [&] {
+            return identityFrame.Found() || outputComplete;
+        });
+        if (!identityFrame.Found()) {
+            code = InFrameFailure;
+            win32 = !observed
+                ? ERROR_TIMEOUT
+                : (outputError == ERROR_SUCCESS ? ERROR_HANDLE_EOF : outputError);
+        }
+        identityPending = false;
+    };
+    const auto writeIdentityInputAndAwait = [&]
+        (const std::string_view InInput,
+         std::vector<std::string> InNeedles,
+         const DWORD InInputFailure,
+         const DWORD InFrameFailure) {
+        if (!identityMode || code != kNoFailure) return;
         {
             std::scoped_lock lock(mutex);
-            resizedFrame = Needle(resizedNeedle);
+            identityFrame = FrameSemanticEvidence(std::move(InNeedles));
+            identityPending = true;
+        }
+        DWORD inputError = ERROR_SUCCESS;
+        if (!WriteAll(inputWrite.Get(), InInput, inputError)) {
+            std::scoped_lock lock(mutex);
+            identityPending = false;
+            code = InInputFailure;
+            win32 = inputError;
+        }
+        changed.notify_all();
+        awaitIdentityFrame(InFrameFailure);
+    };
+    if (identityMode) {
+        awaitIdentityFrame(kExitInventoryFrame);
+        captureQaStage("01-inventory-120x36", kInitialColumns, kInitialRows);
+        writeIdentityInputAndAwait(
+            "s",
+            {"repo=" + *repositoryToken},
+            kExitSelectedInput,
+            kExitSelectedFrame);
+        captureQaStage("02-selected-120x36", kInitialColumns, kInitialRows);
+        const std::string auditCommand =
+            ":audit verify --plan-file " + *planFile +
+            " --run-id " + *runId + " --attempt 1 --json\r";
+        writeIdentityInputAndAwait(
+            auditCommand,
+            {"scope=workspace repo=repository-",
+             "run=" + *compactRunId + " receipt=" + *compactReceiptId,
+             "keys=Esc/q close"},
+            kExitAuditInput,
+            kExitLinkedIdentityFrame);
+        captureQaStage("03-audit-120x36", kInitialColumns, kInitialRows);
+    }
+    const auto resizeAndAwait = [&](const short InColumns, const short InRows,
+                                     const std::string& InMarker,
+                                     const std::string& InAudit,
+                                     const std::string& InIdentity,
+                                     const std::string& InGuidance,
+                                     const std::string& InStatus,
+                                     const DWORD InResizeFailure,
+                                     const DWORD InFrameFailure) {
+        if (code != kNoFailure) return;
+        {
+            std::scoped_lock lock(mutex);
+            resizedFrame = ResizeSemanticEvidence(
+                InMarker, InAudit, InIdentity, InGuidance, InStatus);
             resizePending = true;
             resizeCommitted = false;
         }
         const HRESULT resized = ResizePseudoConsole(
-            pseudoConsole, COORD{kResizeColumns, kResizeRows});
+            pseudoConsole, COORD{InColumns, InRows});
         {
             std::scoped_lock lock(mutex);
             resizeCommitted = SUCCEEDED(resized);
@@ -437,23 +858,68 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
         }
         changed.notify_all();
         if (FAILED(resized)) {
-            code = kExitResize;
+            code = InResizeFailure;
             win32 = Win32FromHresult(resized);
         }
-    }
-    if (code == kNoFailure) {
+        if (code != kNoFailure) return;
         std::unique_lock lock(mutex);
         const bool observed = changed.wait_until(lock, deadline, [&] {
             return (resizeCommitted && resizedFrame.Found()) || outputComplete;
         });
         if (!(resizeCommitted && resizedFrame.Found())) {
-            code = kExitResizedFrame;
+            code = InFrameFailure;
             win32 = !observed
                 ? ERROR_TIMEOUT
                 : (outputError == ERROR_SUCCESS ? ERROR_HANDLE_EOF : outputError);
         }
+    };
+    const std::string compactMarker = "\x1b[8;22;72t";
+    if (identityMode) {
+        const std::string compactIdentity =
+            "run=" + *compactRunId + " receipt=" + *compactReceiptId;
+        resizeAndAwait(kCompactColumns, kCompactRows, compactMarker,
+            "AUDIT", compactIdentity, "Esc/q close",
+            "repo=repository-",
+            kExitCompactResize, kExitCompactFrame);
+        captureQaStage("04-audit-72x22", kCompactColumns, kCompactRows);
+        resizeAndAwait(kNarrowColumns, kNarrowRows, narrowNeedle,
+            "AUDIT", compactIdentity, "repo=repository-",
+            "status=",
+            kExitNarrowResize, kExitNarrowFrame);
+        captureQaStage("05-audit-40x12", kNarrowColumns, kNarrowRows);
+        resizeAndAwait(kMinimumColumns, kMinimumRows, minimumNeedle,
+            "AUDIT verified", "receipt=linked", "run=" + *compactRunId,
+            "keys=Esc/q close",
+            kExitMinimumResize, kExitMinimumFrame);
+        captureQaStage("06-audit-24x12", kMinimumColumns, kMinimumRows);
+        resizeAndAwait(kRestoreColumns, kRestoreRows, restoredNeedle,
+            "scope=workspace repo=repository-",
+            compactIdentity, "Esc/q close", "status=",
+            kExitRestoreResize, kExitRestoredFrame);
+        captureQaStage("07-audit-restored-120x36",
+            kRestoreColumns, kRestoreRows);
+        writeIdentityInputAndAwait(
+            "q",
+            {"repo=" + *repositoryToken, "preview closed"},
+            kExitPreviewCloseInput,
+            kExitPreviewCloseFrame);
+        captureQaStage("08-preview-closed-120x36",
+            kRestoreColumns, kRestoreRows);
+    } else {
+        resizeAndAwait(kCompactColumns, kCompactRows, compactMarker,
+            "AUDIT", "receipt=missing", "q quit", "status=",
+            kExitCompactResize, kExitCompactFrame);
+        resizeAndAwait(kNarrowColumns, kNarrowRows, narrowNeedle,
+            "AUDIT", "receipt=missing", "q quit", "status=",
+            kExitNarrowResize, kExitNarrowFrame);
+        resizeAndAwait(kMinimumColumns, kMinimumRows, minimumNeedle,
+            "AUDIT", "receipt=missing", "q quit", "status=",
+            kExitMinimumResize, kExitMinimumFrame);
+        resizeAndAwait(kRestoreColumns, kRestoreRows, restoredNeedle,
+            "scope: workspace", "audit: receipt=missing", "exit: q quit", "inventory:",
+            kExitRestoreResize, kExitRestoredFrame);
     }
-    if (code == kNoFailure) {
+    if (!identityMode && code == kNoFailure) {
         const DWORD armed = WaitForSingleObject(cancellationArmed.Get(),
             RemainingDeadlineMilliseconds(deadline));
         if (armed != WAIT_OBJECT_0) {
@@ -462,7 +928,7 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
         }
     }
     if (code == kNoFailure) {
-        const char input = sendEscape ? '\x1b' : 'q';
+        const char input = identityMode ? 'q' : (sendEscape ? '\x1b' : 'q');
         DWORD written = 0;
         BOOL wrote = FALSE;
         DWORD inputError = ERROR_SUCCESS;
@@ -491,7 +957,7 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
             win32 = inputError;
         }
     }
-    if (code == kNoFailure) {
+    if (!identityMode && code == kNoFailure) {
         const DWORD acknowledged = WaitForSingleObject(cancellationAcknowledged.Get(),
             RemainingDeadlineMilliseconds(deadline));
         if (acknowledged != WAIT_OBJECT_0) {
@@ -566,12 +1032,7 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
     }
 
     if (hostIssuedKill || !childStopped) {
-        // Never close a pseudoconsole or stop its reader after this host has
-        // killed the wrapper, or while wrapper termination remains unproven.
-        // Emit the sole terminal record, then retain all ownership for the
-        // outer controller's hard timeout.
-        (void)PrintResult(false, code, win32, childExit, outputEof);
-        StallForOuterController();
+        return PrintResult(false, code, win32, childExit, outputEof);
     }
 
     // Even safe cleanup can hang inside ClosePseudoConsole on affected Windows
