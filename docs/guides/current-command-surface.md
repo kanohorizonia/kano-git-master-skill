@@ -403,6 +403,22 @@ active-batch scope mismatches, and an existing `index.lock` are blockers. For a
 rename, list both old and new paths. See `agent-mutation-queue.md` for the full
 agent policy.
 
+For a verified stable-owner text overlap, capture pre-existing HEAD, staged,
+and raw working versions before the caller edits the selected path:
+
+```bash
+./scripts/kog agent-queue checkpoint capture --id <id> --path src/file.cpp --source <provenance> --work-item <ticket> --owner-stable
+./scripts/kog commit --exact-path src/file.cpp --overlap-checkpoint <id> -m "[Git][Chore] Own change (<ticket>)"
+```
+
+The WIP checkpoint is pinned only under `refs/kog/checkpoints/<id>`; it is not
+an ancestor of the caller's own-only feature commit and is not pushed by this
+route. The receipt distinguishes `saved`, `tested`, `integrated`, `published`,
+and `consumed`. `recovery_required` means a local own commit exists but exact
+post-commit reconciliation was not proven; use its SHA and recovery ref for
+manual inspection, not a blind retry. The route rejects binary or inseparable
+mixed ownership, secret-bearing evidence, active writers, and ref/index drift.
+
 `kog fetch` recursively discovers repositories and runs parallel `git fetch` with `--all --prune --tags` defaults. Use `--remote <name>` to target one remote, `--jobs/-j auto|N` for concurrency, and `--dry-run` to preview commands.
 
 `kog clone <url>` clones the main repository, synchronizes recursive submodule URLs, and initializes all nested submodules by default. Human terminal runs allow the configured credential helper to prompt when cached credentials are unavailable; non-TTY automation remains non-interactive. Use `--no-submodules` only when intentionally deferring submodule checkout.

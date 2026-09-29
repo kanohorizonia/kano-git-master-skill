@@ -4134,6 +4134,7 @@ void ConfigureCommitCommand(CLI::App& InApp) {
     auto* exactPaths = new std::vector<std::string>{};
     auto* expectedHead = new std::string{};
     auto* queueBatch = new std::string{};
+    auto* overlapCheckpoint = new std::string{};
     auto* bExactDryRun = new bool{false};
 
     auto configure = [&](CLI::App* InCmd) {
@@ -4163,6 +4164,7 @@ void ConfigureCommitCommand(CLI::App& InApp) {
         InCmd->add_option("--exact-path", *exactPaths, "Commit only this exact file path through an isolated index; repeatable");
         InCmd->add_option("--expected-head", *expectedHead, "Fail if HEAD differs before exact-path commit");
         InCmd->add_option("--queue-batch", *queueBatch, "Active agent-queue batch authorizing exact paths");
+        InCmd->add_option("--overlap-checkpoint", *overlapCheckpoint, "Saved cooperative overlap checkpoint id for an own-only exact-path commit");
         InCmd->add_flag("--dry-run", *bExactDryRun, "Preview exact-path included and excluded files without mutation");
     };
 
@@ -4228,11 +4230,12 @@ void ConfigureCommitCommand(CLI::App& InApp) {
             options.message = *message;
             options.expectedHead = *expectedHead;
             options.queueBatch = *queueBatch;
+            options.overlapCheckpoint = *overlapCheckpoint;
             options.dryRun = *bExactDryRun;
             std::exit(RunExactPathCommit(options));
         }
-        if (!expectedHead->empty() || !queueBatch->empty() || *bExactDryRun) {
-            std::cerr << "Error: --expected-head, --queue-batch, and --dry-run require --exact-path\n";
+        if (!expectedHead->empty() || !queueBatch->empty() || !overlapCheckpoint->empty() || *bExactDryRun) {
+            std::cerr << "Error: --expected-head, --queue-batch, --overlap-checkpoint, and --dry-run require --exact-path\n";
             std::exit(2);
         }
 

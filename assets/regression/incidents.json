@@ -1091,6 +1091,47 @@
           "mapping_state": "source-linked"
         }
       ]
+    },
+    {
+      "incident_id": "KOG-TSK-0142",
+      "incident_date": "2026-09-29",
+      "root_cause": "The exact-path route could isolate unrelated staged paths but had no provenance-preserving recovery for a selected path with pre-existing staged and working changes; broad converge and harvest rejected a dirty target or collapsed those versions, blocking a verified caller-owned commit.",
+      "backlog_ref": "KOG-TSK-0142",
+      "change_ref": "KOG-TSK-0142",
+      "workflow_contracts": [
+        "unrelated-stage-preservation",
+        "agent-mode-plan"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KOG-TSK-0142/staged-working-own-only",
+          "test_name": "cooperative checkpoint preserves staged and working versions before an own-only commit",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/agent_queue_exact_commit_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-TSK-0142/mixed-binary-guards",
+          "test_name": "cooperative checkpoint blocks binary split and same-hunk mixed ownership",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/agent_queue_exact_commit_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-TSK-0142/secret-lock-ref-drift",
+          "test_name": "cooperative checkpoint rejects secret lock and changed base without losing WIP",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/agent_queue_exact_commit_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-TSK-0142/remote-and-hook-boundary",
+          "test_name": "cooperative checkpoint keeps a diverged remote and a rejecting hook outside own history",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/agent_queue_exact_commit_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
     }
   ]
 }
