@@ -26,6 +26,7 @@ struct TuiHistoryEntry {
 struct TuiHistoryBatchResult {
     std::vector<TuiHistoryEntry> entries;
     bool reachedEnd = false;
+    bool cancelled = false;
     std::string errorMessage;
     std::string anchorSha;
 };
@@ -69,6 +70,7 @@ struct TuiHistoryProbeResult {
     std::string stderrText;
     bool stdoutTruncated = false;
     bool stderrTruncated = false;
+    bool cancelled = false;
 };
 
 using TuiHistoryProbeExecutor = std::function<TuiHistoryProbeResult(

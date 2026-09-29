@@ -3,6 +3,10 @@
 #include <cstdint>
 #include <optional>
 
+namespace kano::git::shell {
+struct ExecResult;
+}
+
 namespace kano::git::commands {
 
 enum class TuiAsyncSurface {
@@ -11,6 +15,12 @@ enum class TuiAsyncSurface {
     HistoryDetail,
     Discover,
     Preview,
+};
+
+enum class TuiAsyncProcessCompletion {
+    Completed,
+    Cancelled,
+    Failed,
 };
 
 struct TuiAsyncLifecycleState {
@@ -34,6 +44,10 @@ struct TuiAsyncCompletionDecision {
     bool bPresentSurface = false;
     bool bExitNow = false;
 };
+
+[[nodiscard]] auto ClassifyTuiAsyncProcessResult(
+    const kano::git::shell::ExecResult& InResult)
+    -> TuiAsyncProcessCompletion;
 
 [[nodiscard]] auto TryBeginTuiAsyncOperation(
     TuiAsyncLifecycleState& InOutState,
