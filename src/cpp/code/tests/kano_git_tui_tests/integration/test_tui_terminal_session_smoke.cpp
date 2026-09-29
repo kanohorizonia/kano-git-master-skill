@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <mutex>
 #include <optional>
@@ -1337,6 +1338,109 @@ TEST_CASE(
     CHECK(outcome == WindowsHostOutcome::KilledAtBeforeClose);
     CHECK_FALSE(controller.Status().find(kWindowsHostSuccess) != std::string::npos);
     CHECK(controller.JobIsEmpty());
+}
+
+// KOG-BUG-0107: out-of-process helpers used by the q/Esc cancellation
+// tests below.  These mirror the fixture builders from
+// kog-bug-0109's live-resize evidence helper set so the new tests do
+// not depend on a separate helper header.
+class ScopedWindowsSandbox final {
+  public:
+    explicit ScopedWindowsSandbox(std::string InName)
+        : context_(
+              kano::git::tests::functional::CreateSandboxWorkspace(
+                  std::move(InName))) {}
+
+    ~ScopedWindowsSandbox() {
+        kano::git::tests::functional::RemoveSandboxWorkspace(context_);
+    }
+
+    ScopedWindowsSandbox(const ScopedWindowsSandbox&) = delete;
+    auto operator=(const ScopedWindowsSandbox&)
+        -> ScopedWindowsSandbox& = delete;
+
+    [[nodiscard]] auto Root() const -> const std::filesystem::path& {
+        return context_.root;
+    }
+
+  private:
+    kano::git::tests::functional::SandboxContext context_;
+};
+
+class ScopedWindowsCurrentDirectory final {
+  public:
+    explicit ScopedWindowsCurrentDirectory(
+        const std::filesystem::path& InCurrent)
+        : previous_(std::filesystem::current_path()) {
+        std::filesystem::current_path(InCurrent);
+    }
+
+    ~ScopedWindowsCurrentDirectory() {
+        std::error_code ignored;
+        std::filesystem::current_path(previous_, ignored);
+    }
+
+    ScopedWindowsCurrentDirectory(const ScopedWindowsCurrentDirectory&) = delete;
+    auto operator=(const ScopedWindowsCurrentDirectory&)
+        -> ScopedWindowsCurrentDirectory& = delete;
+
+  private:
+    std::filesystem::path previous_;
+};
+
+auto RequireWindowsCommandSuccess(
+    const kano::git::tests::functional::CommandResult& InResult,
+    const std::string_view InContext) -> void {
+    INFO(std::string(InContext));
+    INFO("exit=" << InResult.exitCode);
+    INFO("stdout=" << InResult.stdoutText);
+    INFO("stderr=" << InResult.stderrText);
+    REQUIRE(InResult.exitCode == 0);
+}
+
+auto WriteWindowsFixtureFile(
+    const std::filesystem::path& InPath,
+    const std::string_view InText) -> void {
+    std::filesystem::create_directories(InPath.parent_path());
+    std::ofstream stream(InPath, std::ios::binary | std::ios::trunc);
+    REQUIRE(stream.good());
+    stream.write(InText.data(), static_cast<std::streamsize>(InText.size()));
+    REQUIRE(stream.good());
+}
+
+auto WindowsUtf8PathText(const std::filesystem::path& InPath) -> std::string {
+#if defined(_WIN32)
+    const auto value = InPath.generic_u8string();
+    return {value.begin(), value.end()};
+#else
+    return InPath.generic_string();
+#endif
+}
+
+auto InitializeWindowsFixtureRepository(
+    const std::filesystem::path& InRepository) -> void {
+    using namespace kano::git::tests::functional;
+    std::filesystem::create_directories(InRepository);
+    RequireWindowsCommandSuccess(
+        RunGit({"init", "."}, InRepository),
+        "initialize KOG-BUG-0107 q-cancel repository");
+    RequireWindowsCommandSuccess(
+        RunGit({"config", "user.name", "KOG TUI Cancel Test"}, InRepository),
+        "configure KOG-BUG-0107 q-cancel repository user name");
+    RequireWindowsCommandSuccess(
+        RunGit({"config", "user.email", "kog-tui-cancel@example.invalid"},
+            InRepository),
+        "configure KOG-BUG-0107 q-cancel repository user email");
+    WriteWindowsFixtureFile(
+        InRepository / "README.md",
+        "KOG-BUG-0107 q/Esc cancellation fixture\n");
+    RequireWindowsCommandSuccess(
+        RunGit({"add", "README.md"}, InRepository),
+        "stage KOG-BUG-0107 q-cancel repository fixture");
+    RequireWindowsCommandSuccess(
+        RunGit({"commit", "-m", "seed KOG-BUG-0107 q-cancel repository"},
+            InRepository),
+        "commit KOG-BUG-0107 q-cancel repository fixture");
 }
 
 // KOG-BUG-0107: the production TUI's startup-cancel-ack harness proves that
