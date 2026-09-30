@@ -1471,7 +1471,7 @@ auto InitializeWindowsFixtureRepository(
 //       fake git and the Job Object cleanup emptied the tree.
 TEST_CASE(
     "q cancels an in-flight owned git subprocess and restores terminal",
-    "[integration][tui_terminal_session][production-path][KOG-BUG-0107]") {
+    "[integration][tui_terminal_session][production-path][tui_pr_focus][KOG-BUG-0107]") {
     const ScopedWindowsSandbox sandbox("kog-bug-0107-q-cancel-active-git");
 
     // Real workspace so the production TUI has something to discover.
@@ -1548,7 +1548,7 @@ TEST_CASE(
 
 TEST_CASE(
     "Escape cancels an in-flight owned git subprocess and restores terminal",
-    "[integration][tui_terminal_session][production-path][KOG-BUG-0107]") {
+    "[integration][tui_terminal_session][production-path][tui_pr_focus][KOG-BUG-0107]") {
     const ScopedWindowsSandbox sandbox(
         "kog-bug-0107-escape-cancel-active-git");
     const auto workspace = (sandbox.Root() / "ws").lexically_normal();
