@@ -265,8 +265,25 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
     }
 
     std::wstring commandLine = QuoteArgument(InArguments[1]);
-    HANDLE inheritedHandles[] = {consoleInput.Get(), consoleOutput.Get(), armedEvent,
-        acknowledgementEvent};
+    // In --test-skip-startup-harness mode the harness event handles are
+    // nullptr; passing nullptr entries in PROC_THREAD_ATTRIBUTE_HANDLE_LIST
+    // makes UpdateProcThreadAttribute fail with ERROR_INVALID_PARAMETER.
+    // Build the smallest accurate list so the production launch succeeds.
+    HANDLE inheritedHandles[4]{};
+    SIZE_T inheritedHandleCount = 0;
+    HANDLE inheritedHandlesBuf[2];
+    SIZE_T inheritedHandleCountBuf = 0;
+    if (harnessMode) {
+        inheritedHandles[0] = consoleInput.Get();
+        inheritedHandles[1] = consoleOutput.Get();
+        inheritedHandles[2] = armedEvent;
+        inheritedHandles[3] = acknowledgementEvent;
+        inheritedHandleCount = 4;
+    } else {
+        inheritedHandlesBuf[0] = consoleInput.Get();
+        inheritedHandlesBuf[1] = consoleOutput.Get();
+        inheritedHandleCountBuf = 2;
+    }
     SIZE_T attributeBytes = 0;
     InitializeProcThreadAttributeList(nullptr, 1, 0, &attributeBytes);
     std::vector<std::byte> attributes(attributeBytes);
@@ -281,10 +298,22 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
             if (value != nullptr) DeleteProcThreadAttributeList(value);
         }
     } cleanup{attributeList};
-    if (UpdateProcThreadAttribute(
-            attributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-            inheritedHandles, sizeof(inheritedHandles), nullptr, nullptr) == 0) {
-        return PrintWin32Failure("production-handle-list-init-failed", GetLastError());
+    if (harnessMode) {
+        if (UpdateProcThreadAttribute(
+                attributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                inheritedHandles,
+                inheritedHandleCount * sizeof(HANDLE),
+                nullptr, nullptr) == 0) {
+            return PrintWin32Failure("production-handle-list-init-failed", GetLastError());
+        }
+    } else {
+        if (UpdateProcThreadAttribute(
+                attributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                inheritedHandlesBuf,
+                inheritedHandleCountBuf * sizeof(HANDLE),
+                nullptr, nullptr) == 0) {
+            return PrintWin32Failure("production-handle-list-init-failed", GetLastError());
+        }
     }
 
     STARTUPINFOEXW startup{};
