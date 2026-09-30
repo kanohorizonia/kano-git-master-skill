@@ -1505,6 +1505,10 @@ TEST_CASE(
         std::string(originalPath);
     const ScopedWindowsEnvironment fakeGitPath("PATH", newPath.c_str());
     const ScopedWindowsEnvironment testMode("KOG_TEST_MODE", "1");
+    // Set cwd to the workspace so the production TUI's
+    // workspaceRoot = current_path() resolves to the test's real
+    // git workspace and git discovery reaches the fake-git.
+    const ScopedWindowsCurrentDirectory currentDirectory(workspace);
     // Deliberately do NOT set KOG_TUI_TEST_STARTUP_CANCEL_ACK: the
     // production TUI must proceed past the startup harness and into
     // the actual git launch.
@@ -1576,6 +1580,7 @@ TEST_CASE(
         std::string(originalPath);
     const ScopedWindowsEnvironment fakeGitPath("PATH", newPath.c_str());
     const ScopedWindowsEnvironment testMode("KOG_TEST_MODE", "1");
+    const ScopedWindowsCurrentDirectory currentDirectory(workspace);
 
     std::error_code removeError;
     std::filesystem::remove(markerPath, removeError);
