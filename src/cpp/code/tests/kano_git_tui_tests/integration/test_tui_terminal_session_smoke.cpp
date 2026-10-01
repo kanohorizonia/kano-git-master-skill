@@ -1005,7 +1005,8 @@ class WindowsConPtyHostController final {
         const bool bInEscape,
         const bool bInStallBeforeClose,
         const bool bInQAfterMarkerMode = false,
-        const std::wstring& InQAfterMarkerFile = {})
+        const std::wstring& InQAfterMarkerFile = {},
+        const std::wstring& InQAfterMarkerKick = L"r")
         : deadline_(std::chrono::steady_clock::now() + kTerminalDeadline) {
         WindowsHostLaunchResources resources;
         resources.deadline = deadline_;
@@ -1067,6 +1068,13 @@ class WindowsConPtyHostController final {
             REQUIRE_FALSE(InQAfterMarkerFile.empty());
             command += L" --test-q-after-marker ";
             command += QuoteWindowsArgument(InQAfterMarkerFile);
+            // Default kick byte is 'r' (production TUI's :refresh shortcut),
+            // which kicks a real git launch through the fake git.  Tests
+            // that do not want a kick can pass an empty wstring here.
+            if (!InQAfterMarkerKick.empty()) {
+                command += L" ";
+                command += QuoteWindowsArgument(InQAfterMarkerKick);
+            }
         }
         PROCESS_INFORMATION process{};
         REQUIRE(CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,

@@ -224,9 +224,16 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
     // (e.g. written by a fake git that blocks for the rest of the test)
     // before sending q, proving that q/Esc cancels an already-running
     // owned subprocess tree.
+    //
+    // Optional 7th positional argument: a single-byte "kick" prefix
+    // written to the TUI input BEFORE the marker wait.  Use 'r' to
+    // trigger the TUI's :refresh command so git actually launches and
+    // the test exercises an in-flight cancellation rather than the
+    // before-launch path.
     bool qAfterMarkerMode = false;
     std::wstring qAfterMarkerFile;
-    if (InArgumentCount == 6) {
+    char qAfterMarkerKick = '\0';
+    if (InArgumentCount == 6 || InArgumentCount == 7) {
         if (std::wcscmp(InArguments[4], L"--test-q-after-marker") != 0) {
             return PrintResult(false, code, win32, childExit, outputEof);
         }
@@ -235,6 +242,16 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
         }
         qAfterMarkerFile = InArguments[5];
         qAfterMarkerMode = true;
+        if (InArgumentCount == 7) {
+            if (InArguments[6] == nullptr) {
+                return PrintResult(false, code, win32, childExit, outputEof);
+            }
+            const wchar_t kick = InArguments[6][0];
+            if (kick == L'\\0' || kick > 0x7F) {
+                return PrintResult(false, code, win32, childExit, outputEof);
+            }
+            qAfterMarkerKick = static_cast<char>(kick);
+        }
     }
     const bool stallBeforeClose = !qAfterMarkerMode && InArgumentCount == 5 &&
         std::wcscmp(InArguments[4], L"--test-stall-before-close") == 0;
@@ -495,6 +512,34 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
         // wait for the production TUI to exit under a bounded deadline.
         // If the fake git is still blocked at the deadline, the test
         // fails: the q/Esc path did not cancel the running subprocess.
+        //
+        // When a kick byte is provided, write it BEFORE the marker wait
+        // so the production TUI's :refresh kicks a real git launch
+        // through the fake git (the only practical way to drive an
+        // in-flight owned subprocess from the production TUI's startup
+        // inventory path).
+        if (qAfterMarkerKick != '\0') {
+            DWORD kickWritten = 0U;
+            BOOL kickWrote = FALSE;
+            DWORD kickError = ERROR_SUCCESS;
+            {
+                std::scoped_lock lock(mutex);
+                kickWrote = WriteFile(
+                    inputWrite.Get(),
+                    &qAfterMarkerKick,
+                    1U,
+                    &kickWritten,
+                    nullptr);
+                if (!kickWrote || kickWritten != 1U) {
+                    kickError = kickWrote ? ERROR_WRITE_FAULT : GetLastError();
+                }
+            }
+            changed.notify_all();
+            if (!kickWrote || kickWritten != 1U) {
+                code = kExitAfterMarkerInput;
+                win32 = kickError;
+            }
+        }
         const auto markerDeadline = std::chrono::steady_clock::now() +
             kQAfterMarkerDeadline;
         bool markerFound = false;
