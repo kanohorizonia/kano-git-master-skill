@@ -1482,6 +1482,16 @@ TEST_CASE(
     "[integration][tui_terminal_session][production-path][tui_pr_focus][KOG-BUG-0107]") {
     const ScopedWindowsSandbox sandbox("kog-bug-0107-q-cancel-active-git");
 
+    // KOG-BUG-0107 round 5: stage-checkpoint log file.  The wrapper writes
+    // 'stage=N<tab>pid=<pid>...' lines to this path so the test can
+    // determine exactly how far the production launch reached before any
+    // failure.  Read this file after WindowsConPtyHostController.Run()
+    // returns and report it via INFO + REQUIREs.
+    const auto stageLogPath = (sandbox.Root() / "stage-log.txt")
+        .lexically_normal().generic_string();
+    const ScopedWindowsEnvironment stageLogEnv(
+        "KOG_TUI_TEST_STAGE_LOG", stageLogPath.c_str());
+
     // Real workspace so the production TUI has something to discover.
     const auto workspace = (sandbox.Root() / "ws").lexically_normal();
     InitializeWindowsFixtureRepository(workspace);
@@ -1563,6 +1573,10 @@ TEST_CASE(
     "[integration][tui_terminal_session][production-path][tui_pr_focus][KOG-BUG-0107]") {
     const ScopedWindowsSandbox sandbox(
         "kog-bug-0107-escape-cancel-active-git");
+    const auto stageLogPath = (sandbox.Root() / "stage-log.txt")
+        .lexically_normal().generic_string();
+    const ScopedWindowsEnvironment stageLogEnv(
+        "KOG_TUI_TEST_STAGE_LOG", stageLogPath.c_str());
     const auto workspace = (sandbox.Root() / "ws").lexically_normal();
     InitializeWindowsFixtureRepository(workspace);
 
@@ -1607,10 +1621,17 @@ TEST_CASE(
         wideMarker);
     const auto outcome = controller.Run(false);
     const auto transcript = controller.Transcript();
+    // KOG-BUG-0107 round 5: dump the wrapper stage-checkpoint log so a
+    // failing run tells us exactly which stage was the last one reached.
+    std::ifstream stageStream(stageLogPath, std::ios::binary);
+    std::string stageLogContent(
+        (std::istreambuf_iterator<char>(stageStream)),
+        std::istreambuf_iterator<char>());
     INFO("bounded ConPTY transcript: total=" << controller.TranscriptTotalBytes()
          << "; omitted=" << controller.TranscriptOmittedBytes()
          << "\n" << transcript
-         << "\nhost status:\n" << controller.Status());
+         << "\nhost status:\n" << controller.Status()
+         << "\nwrapper stage log:\n" << stageLogContent);
     REQUIRE(outcome == WindowsHostOutcome::Success);
     CHECK(controller.JobIsEmpty());
     CHECK(std::filesystem::exists(markerPath));

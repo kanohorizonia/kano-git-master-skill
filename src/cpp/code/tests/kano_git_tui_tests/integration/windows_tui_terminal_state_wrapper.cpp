@@ -1,6 +1,13 @@
 // Windows-only companion for the ConPTY smoke test.  It owns the same
 // pseudoconsole as the production binary and can therefore prove that the
 // production process restored that terminal's modes and code pages.
+//
+// KOG-BUG-0107 round 5: stage checkpoint emitter.  When the env var
+// KOG_TUI_TEST_STAGE_LOG is set (absolute file path), each major
+// checkpoint appends "stage=N<tab>msg\n" so the test process can read
+// it after the wrapper exits and determine exactly which stage the
+// production launch reached.  This is the only new behaviour; the
+// existing console-restoration contract is unchanged.
 
 #include <windows.h>
 
@@ -8,12 +15,43 @@
 #include <cerrno>
 #include <cstdint>
 #include <cwchar>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <string>
 #include <vector>
 
 namespace {
+
+std::wstring GetStageLogPath() {
+    wchar_t buffer[32767]{};
+    const DWORD len = GetEnvironmentVariableW(L"KOG_TUI_TEST_STAGE_LOG",
+        buffer, sizeof(buffer) / sizeof(buffer[0]));
+    if (len == 0U || len >= sizeof(buffer) / sizeof(buffer[0])) {
+        return {};
+    }
+    return std::wstring(buffer);
+}
+
+void WriteStage(const wchar_t* InTag) {
+    const auto path = GetStageLogPath();
+    if (path.empty()) return;
+    std::ofstream out;
+    out.open(path, std::ios::out | std::ios::app | std::ios::binary);
+    if (!out) return;
+    // Encode tag as UTF-8 so the test process on either platform can
+    // read the same bytes.  Single-byte ASCII tags only.
+    std::string utf8;
+    for (const wchar_t* p = InTag; *p != L'\0'; ++p) {
+        const wchar_t c = *p;
+        if (c < 0x80) {
+            utf8.push_back(static_cast<char>(c));
+        }
+    }
+    out << "stage=" << utf8 << "\tpid=" << GetCurrentProcessId()
+        << "\ttid=" << GetCurrentThreadId() << "\n";
+    out.flush();
+}
 
 class ScopedHandle final {
   public:
@@ -209,10 +247,13 @@ auto WriteConsoleEvidence(const ScopedHandle& InOutput, const char* InBytes,
 } // namespace
 
 auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
+    WriteStage(L"stage01_wrapper_entered");
     if (InArgumentCount < 2 || InArguments[1] == nullptr ||
         InArguments[1][0] == L'\0') {
+        WriteStage(L"stage01_failed_missing_binary");
         return PrintFailure("missing-production-binary");
     }
+    WriteStage(L"stage02_args_parsed");
     // KOG-BUG-0107: in --test-skip-startup-harness mode the wrapper still
     // sets KOG_TEST_MODE=1 (other test infrastructure needs it) but does
     // not set the startup cancel-ack env vars; the production TUI then
@@ -239,7 +280,9 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
 
     ScopedHandle consoleInput;
     ScopedHandle consoleOutput;
+    WriteStage(L"stage03_console_devices_in_use");
     if (!OpenConsoleDevices(consoleInput, consoleOutput, failureError)) {
+        WriteStage(L"stage03_failed_open_console_devices");
         return PrintWin32Failure("console-device-open-before-launch", failureError);
     }
     if (SetEnvironmentVariableW(L"KOG_TEST_MODE", L"1") == 0) {
@@ -261,10 +304,36 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
     const char* captureFailure = nullptr;
     if (!CaptureConsoleState(
             before, consoleInput, consoleOutput, captureFailure, failureError)) {
+        WriteStage(L"stage04_failed_capture_console_state");
         return PrintWin32Failure(captureFailure, failureError);
     }
+    WriteStage(L"stage04_console_state_captured");
 
     std::wstring commandLine = QuoteArgument(InArguments[1]);
+    // KOG-BUG-0107 round 5: log the exact command line + cwd + env so we
+    // can compare failing and passing paths without dumping arbitrary
+    // host state.  Stripped to argv-only -- no host-private paths.
+    WriteStage(L"stage03a_command_line_built");
+    {
+        std::ofstream out;
+        out.open(GetStageLogPath(), std::ios::out | std::ios::app | std::ios::binary);
+        if (out) {
+            std::string cmdUtf8;
+            for (const wchar_t* p = commandLine.data();
+                 p != commandLine.data() + commandLine.size(); ++p) {
+                const wchar_t c = *p;
+                if (c < 0x80) cmdUtf8.push_back(static_cast<char>(c));
+                else cmdUtf8.push_back('?');
+            }
+            out << "argv=" << cmdUtf8 << "\n";
+            char cwd[1024]{};
+            const DWORD cwdLen = GetCurrentDirectoryA(sizeof(cwd), cwd);
+            if (cwdLen > 0U && cwdLen < sizeof(cwd)) {
+                out << "cwd=" << cwd << "\n";
+            }
+            out.flush();
+        }
+    }
     // In --test-skip-startup-harness mode the harness event handles are
     // nullptr; passing nullptr entries in PROC_THREAD_ATTRIBUTE_HANDLE_LIST
     // makes UpdateProcThreadAttribute fail with ERROR_INVALID_PARAMETER.
@@ -324,21 +393,70 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
     startup.StartupInfo.hStdError = consoleOutput.Get();
     startup.lpAttributeList = attributeList;
     PROCESS_INFORMATION process{};
+    // KOG-BUG-0107 round 5: capture the full environment that the
+    // wrapper inherits and passes to the production TUI so we can
+    // compare with a known-passing production ConPTY test.
+    WriteStage(L"stage05a_create_process_starting");
+    {
+        std::ofstream out;
+        out.open(GetStageLogPath(), std::ios::out | std::ios::app | std::ios::binary);
+        if (out) {
+            const DWORD kBufSize = 4096;
+            std::vector<wchar_t> buf(kBufSize);
+            // Selected / inherited env vars the wrapper sets or relies on.
+            for (const wchar_t* name : {
+                    L"KOG_TEST_MODE",
+                    L"KOG_TUI_TEST_STARTUP_CANCEL_ACK",
+                    L"PATH",
+                    L"TMP",
+                    L"TEMP",
+                    L"USERPROFILE",
+            }) {
+                const DWORD len = GetEnvironmentVariableW(name,
+                    buf.data(), kBufSize);
+                std::string nameUtf8;
+                for (const wchar_t* p = name; *p != L'\0'; ++p) {
+                    nameUtf8.push_back(static_cast<char>(*p));
+                }
+                if (len == 0U || len >= kBufSize) {
+                    out << "env " << nameUtf8 << "=<absent>\n";
+                    continue;
+                }
+                std::string valUtf8;
+                for (DWORD i = 0U; i < len; ++i) {
+                    const wchar_t c = buf[i];
+                    valUtf8.push_back(c < 0x80 ? static_cast<char>(c) : '?');
+                }
+                out << "env " << nameUtf8 << "=" << valUtf8 << "\n";
+            }
+            out.flush();
+        }
+    }
     if (!CreateProcessW(
             nullptr, commandLine.data(), nullptr, nullptr, TRUE,
             EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr,
             &startup.StartupInfo, &process)) {
-        return PrintWin32Failure("production-launch-failed", GetLastError());
+        const DWORD err = GetLastError();
+        WriteStage(L"stage05_failed_create_process");
+        WriteStage((err == ERROR_INVALID_PARAMETER)
+            ? L"stage05_create_process_error_87_invalid_parameter"
+            : L"stage05_create_process_error_other");
+        return PrintWin32Failure("production-launch-failed", err);
     }
+    WriteStage(L"stage05_create_process_ok");
     CloseHandle(process.hThread);
 
     // This is an independent diagnostic deadline.  The outer controller is
     // the sole hard safety bound for this process tree.
     constexpr DWORD kProductionExitTimeoutMs = 5'000;
     constexpr DWORD kProductionTerminateJoinTimeoutMs = 500;
+    WriteStage(L"stage06_waiting_for_production_exit");
     const auto waitResult =
         WaitForSingleObject(process.hProcess, kProductionExitTimeoutMs);
     if (waitResult != WAIT_OBJECT_0) {
+        WriteStage((waitResult == WAIT_TIMEOUT)
+            ? L"stage06_production_exit_timeout"
+            : L"stage06_production_wait_failed");
         (void)TerminateProcess(process.hProcess, 253);
         const DWORD terminated = WaitForSingleObject(
             process.hProcess, kProductionTerminateJoinTimeoutMs);
@@ -361,10 +479,14 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
         return PrintFailure(waitResult == WAIT_TIMEOUT
             ? "production-exit-timeout" : "production-wait-failed");
     }
+    WriteStage(L"stage07_production_exited_clean");
     DWORD childExit = 0;
     const bool gotExit = GetExitCodeProcess(process.hProcess, &childExit) != 0;
     CloseHandle(process.hProcess);
     if (!gotExit || childExit != 0) {
+        WriteStage((childExit == 259)
+            ? L"stage08_production_exit_code_259"
+            : L"stage08_production_exit_nonzero");
         return PrintFailure("production-exit-nonzero");
     }
 
@@ -387,5 +509,6 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
             static_cast<DWORD>(sizeof(kRestoredEvidence) - 1U), writeError)) {
         return PrintWin32Failure("restored-evidence-write-failed", writeError);
     }
+    WriteStage(L"stage09_console_state_restored_emitted");
     return 0;
 }
