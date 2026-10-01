@@ -14,8 +14,8 @@
 #include <cstddef>
 #include <cerrno>
 #include <cstdint>
+#include <cstdio>
 #include <cwchar>
-#include <fstream>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -36,21 +36,37 @@ std::wstring GetStageLogPath() {
 void WriteStage(const wchar_t* InTag) {
     const auto path = GetStageLogPath();
     if (path.empty()) return;
-    std::ofstream out;
-    out.open(path, std::ios::out | std::ios::app | std::ios::binary);
-    if (!out) return;
-    // Encode tag as UTF-8 so the test process on either platform can
-    // read the same bytes.  Single-byte ASCII tags only.
+    // std::ofstream::open takes const char* (or filesystem::path in C++17).
+    // Use Windows CreateFileW directly to avoid ambiguity and keep this
+    // test-only writer minimal and dependency-free.
+    HANDLE file = CreateFileW(
+        path.c_str(),
+        FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    if (file == INVALID_HANDLE_VALUE) return;
     std::string utf8;
+    utf8.append("stage=");
     for (const wchar_t* p = InTag; *p != L'\0'; ++p) {
         const wchar_t c = *p;
         if (c < 0x80) {
             utf8.push_back(static_cast<char>(c));
         }
     }
-    out << "stage=" << utf8 << "\tpid=" << GetCurrentProcessId()
-        << "\ttid=" << GetCurrentThreadId() << "\n";
-    out.flush();
+    char buf[512];
+    const int n = std::snprintf(
+        buf, sizeof(buf), "%s\tpid=%lu\ttid=%lu\n",
+        utf8.c_str(),
+        static_cast<unsigned long>(GetCurrentProcessId()),
+        static_cast<unsigned long>(GetCurrentThreadId()));
+    if (n > 0) {
+        DWORD written = 0;
+        (void)WriteFile(file, buf, static_cast<DWORD>(n), &written, nullptr);
+    }
+    CloseHandle(file);
 }
 
 class ScopedHandle final {
@@ -315,23 +331,32 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
     // host state.  Stripped to argv-only -- no host-private paths.
     WriteStage(L"stage03a_command_line_built");
     {
-        std::ofstream out;
-        out.open(GetStageLogPath(), std::ios::out | std::ios::app | std::ios::binary);
-        if (out) {
-            std::string cmdUtf8;
+        HANDLE file = CreateFileW(
+            GetStageLogPath().c_str(),
+            FILE_APPEND_DATA,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file != INVALID_HANDLE_VALUE) {
+            std::string cmdUtf8 = "argv=";
             for (const wchar_t* p = commandLine.data();
                  p != commandLine.data() + commandLine.size(); ++p) {
                 const wchar_t c = *p;
-                if (c < 0x80) cmdUtf8.push_back(static_cast<char>(c));
-                else cmdUtf8.push_back('?');
+                cmdUtf8.push_back(c < 0x80 ? static_cast<char>(c) : '?');
             }
-            out << "argv=" << cmdUtf8 << "\n";
+            cmdUtf8 += "\n";
+            DWORD written = 0;
+            (void)WriteFile(file, cmdUtf8.data(),
+                static_cast<DWORD>(cmdUtf8.size()), &written, nullptr);
             char cwd[1024]{};
             const DWORD cwdLen = GetCurrentDirectoryA(sizeof(cwd), cwd);
             if (cwdLen > 0U && cwdLen < sizeof(cwd)) {
-                out << "cwd=" << cwd << "\n";
+                std::string cwdLine = "cwd=";
+                cwdLine.append(cwd, cwdLen);
+                cwdLine += "\n";
+                (void)WriteFile(file, cwdLine.data(),
+                    static_cast<DWORD>(cwdLine.size()), &written, nullptr);
             }
-            out.flush();
+            CloseHandle(file);
         }
     }
     // In --test-skip-startup-harness mode the harness event handles are
@@ -398,12 +423,14 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
     // compare with a known-passing production ConPTY test.
     WriteStage(L"stage05a_create_process_starting");
     {
-        std::ofstream out;
-        out.open(GetStageLogPath(), std::ios::out | std::ios::app | std::ios::binary);
-        if (out) {
+        HANDLE file = CreateFileW(
+            GetStageLogPath().c_str(),
+            FILE_APPEND_DATA,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file != INVALID_HANDLE_VALUE) {
             const DWORD kBufSize = 4096;
             std::vector<wchar_t> buf(kBufSize);
-            // Selected / inherited env vars the wrapper sets or relies on.
             for (const wchar_t* name : {
                     L"KOG_TEST_MODE",
                     L"KOG_TUI_TEST_STARTUP_CANCEL_ACK",
@@ -412,24 +439,29 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
                     L"TEMP",
                     L"USERPROFILE",
             }) {
-                const DWORD len = GetEnvironmentVariableW(name,
-                    buf.data(), kBufSize);
                 std::string nameUtf8;
                 for (const wchar_t* p = name; *p != L'\0'; ++p) {
                     nameUtf8.push_back(static_cast<char>(*p));
                 }
+                const DWORD len = GetEnvironmentVariableW(name,
+                    buf.data(), kBufSize);
+                std::string line = "env ";
+                line.append(nameUtf8);
                 if (len == 0U || len >= kBufSize) {
-                    out << "env " << nameUtf8 << "=<absent>\n";
-                    continue;
+                    line += "=<absent>\n";
+                } else {
+                    line += "=";
+                    for (DWORD i = 0U; i < len; ++i) {
+                        const wchar_t c = buf[i];
+                        line.push_back(c < 0x80 ? static_cast<char>(c) : '?');
+                    }
+                    line += "\n";
                 }
-                std::string valUtf8;
-                for (DWORD i = 0U; i < len; ++i) {
-                    const wchar_t c = buf[i];
-                    valUtf8.push_back(c < 0x80 ? static_cast<char>(c) : '?');
-                }
-                out << "env " << nameUtf8 << "=" << valUtf8 << "\n";
+                DWORD written = 0;
+                (void)WriteFile(file, line.data(),
+                    static_cast<DWORD>(line.size()), &written, nullptr);
             }
-            out.flush();
+            CloseHandle(file);
         }
     }
     if (!CreateProcessW(
