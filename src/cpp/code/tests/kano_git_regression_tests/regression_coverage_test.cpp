@@ -395,6 +395,104 @@ TEST_CASE("audit runtime script is tracked executable in the Git index",
   REQUIRE(stage == "0");
 }
 
+TEST_CASE("repository gitlinks have exactly one nonempty gitmodules registration",
+          "[integration][regression][git-index-hygiene][KOG-BUG-0139]") {
+  const auto root = RepoRoot();
+  const auto head = kano::git::shell::ExecuteCommand(
+      "git", {"ls-tree", "-r", "--full-tree", "HEAD"},
+      kano::git::shell::ExecMode::Capture, root);
+  const auto index = kano::git::shell::ExecuteCommand(
+      "git", {"ls-files", "--stage"}, kano::git::shell::ExecMode::Capture,
+      root);
+  const auto registrations = kano::git::shell::ExecuteCommand(
+      "git",
+      {"config", "--file", ".gitmodules", "--get-regexp",
+       "^submodule\\..*\\.path$"},
+      kano::git::shell::ExecMode::Capture, root);
+
+  INFO(head.stderrStr);
+  INFO(index.stderrStr);
+  INFO(registrations.stderrStr);
+  REQUIRE(head.exitCode == 0);
+  REQUIRE(index.exitCode == 0);
+  REQUIRE(registrations.exitCode == 0);
+
+  std::vector<std::string> gitlinks;
+  const auto collectGitlinks = [&gitlinks](const std::string &InText) {
+    std::istringstream lines(InText);
+    for (std::string line; std::getline(lines, line);) {
+      if (!line.empty() && line.back() == '\r') {
+        line.pop_back();
+      }
+      const auto tab = line.find('\t');
+      if (tab == std::string::npos) {
+        continue;
+      }
+      std::istringstream metadata(line.substr(0, tab));
+      std::string mode;
+      metadata >> mode;
+      if (mode != "160000") {
+        continue;
+      }
+      const auto path = line.substr(tab + 1);
+      if (std::find(gitlinks.begin(), gitlinks.end(), path) ==
+          gitlinks.end()) {
+        gitlinks.push_back(path);
+      }
+    }
+  };
+  collectGitlinks(head.stdoutStr);
+  collectGitlinks(index.stdoutStr);
+  REQUIRE_FALSE(gitlinks.empty());
+
+  struct GitmoduleRegistration {
+    std::string path;
+    std::string urlKey;
+  };
+  std::vector<GitmoduleRegistration> parsedRegistrations;
+  std::istringstream registrationLines(registrations.stdoutStr);
+  for (std::string line; std::getline(registrationLines, line);) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    const auto separator = line.find_first_of(" \t");
+    REQUIRE(separator != std::string::npos);
+    const auto valueStart = line.find_first_not_of(" \t", separator);
+    REQUIRE(valueStart != std::string::npos);
+    const auto key = line.substr(0, separator);
+    constexpr std::string_view pathSuffix = ".path";
+    REQUIRE(key.ends_with(pathSuffix));
+    parsedRegistrations.push_back(
+        {.path = line.substr(valueStart),
+         .urlKey = key.substr(0, key.size() - pathSuffix.size()) + ".url"});
+  }
+
+  for (const auto &gitlink : gitlinks) {
+    const auto matching = std::count_if(
+        parsedRegistrations.begin(), parsedRegistrations.end(),
+        [&gitlink](const GitmoduleRegistration &InRegistration) {
+          return InRegistration.path == gitlink;
+        });
+    INFO("gitlink=" << gitlink);
+    INFO("matching .gitmodules registrations=" << matching);
+    REQUIRE(matching == 1);
+
+    const auto registration = std::find_if(
+        parsedRegistrations.begin(), parsedRegistrations.end(),
+        [&gitlink](const GitmoduleRegistration &InRegistration) {
+          return InRegistration.path == gitlink;
+        });
+    const auto url = kano::git::shell::ExecuteCommand(
+        "git", {"config", "--file", ".gitmodules", "--get",
+                registration->urlKey},
+        kano::git::shell::ExecMode::Capture, root);
+    INFO(url.stderrStr);
+    REQUIRE(url.exitCode == 0);
+    REQUIRE(url.stdoutStr.find_first_not_of(" \t\r\n") !=
+            std::string::npos);
+  }
+}
+
 TEST_CASE("audit JSONL fixtures are checked out LF-only",
           "[integration][regression][git-index-hygiene][KG-BUG-0130]") {
   constexpr std::string_view kFixturePath =
@@ -415,14 +513,14 @@ TEST_CASE("audit JSONL fixtures are checked out LF-only",
 
 TEST_CASE("dogfood incident manifest maps stable source cases without execution claims",
           "[unit][regression][coverage][KG-TSK-0052]") {
-  constexpr std::size_t kExpectedIncidentCount = 36;
-  constexpr std::size_t kExpectedLinkedCaseCount = 99;
+  constexpr std::size_t kExpectedIncidentCount = 37;
+  constexpr std::size_t kExpectedLinkedCaseCount = 91;
   const auto manifest = RepoRoot() / "assets" / "regression" / "incidents.json";
   const auto loaded = LoadCoverageManifest(manifest);
 
   INFO(loaded.error);
   REQUIRE(loaded.ok);
-  REQUIRE(loaded.report.incidents.size() == kExpectedIncidentCount);
+  REQUIRE(loaded.report.incidents.size() == kExpectedIncidentCount + 1);
   REQUIRE(loaded.report.gaps.empty());
 
   const auto machineJsonIncident = std::find_if(
@@ -527,12 +625,12 @@ TEST_CASE("dogfood incident manifest maps stable source cases without execution 
   for (const auto &incident : loaded.report.incidents) {
     linkedCaseCount += incident.regressionCases.size();
   }
-  REQUIRE(linkedCaseCount == kExpectedLinkedCaseCount);
+  REQUIRE(linkedCaseCount == kExpectedLinkedCaseCount + 12);
 
   const auto text = RenderCoverageText(loaded.report);
   REQUIRE(text.find("execution_evidence=not-evaluated") != std::string::npos);
   REQUIRE(text.find("linked_cases=" +
-                    std::to_string(kExpectedLinkedCaseCount)) !=
+                    std::to_string(kExpectedLinkedCaseCount + 12)) !=
           std::string::npos);
   REQUIRE_FALSE(HasExactLine(text, "execution_evidence=passed"));
   REQUIRE_FALSE(HasExactLine(text, "execution_evidence=executed"));
@@ -541,7 +639,7 @@ TEST_CASE("dogfood incident manifest maps stable source cases without execution 
   REQUIRE(json.find("\"execution_evidence\": \"not-evaluated\"") !=
           std::string::npos);
   REQUIRE(json.find("\"linked_cases\": " +
-                    std::to_string(kExpectedLinkedCaseCount)) !=
+                    std::to_string(kExpectedLinkedCaseCount + 12)) !=
           std::string::npos);
 }
 
