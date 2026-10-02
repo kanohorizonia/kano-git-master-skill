@@ -279,6 +279,19 @@ Root Pixi task facade:
 
 Wrapper note:
 
+Native validation lanes run under a whole-job watchdog. The default deadline is
+900000 milliseconds with 5000 milliseconds for owned process cleanup; set
+`KANO_UNATTENDED_TIMEOUT_MS` and `KANO_UNATTENDED_CLEANUP_TIMEOUT_MS` to positive
+values for longer bounded lanes. Every discovered CTest case has a 300-second
+deadline, independent of the whole-job deadline. Direct test scripts and the
+native integration custom target also run under the shared watchdog.
+
+Test and helper startup always installs the shared process-local unattended
+policy before running Catch2. CLI/TUI startup enables it for unattended, agent,
+or CI execution; use `KANO_UNATTENDED=1` for an explicit automated invocation.
+`KANO_UNATTENDED=0` preserves interactive debugging for human app invocations.
+Bounded validation lanes opt in explicitly and preserve nonzero failures.
+
 - Repo-root Pixi wrappers `cd src/cpp/shared/infra && pixi run <task>` on purpose.
 - Build-style tasks that invoke CMake presets must run with `src/cpp/` as the effective project root; direct `--manifest-path` forwarding can incorrectly make CMake search for `src/cpp/shared/infra/CMakePresets.json`.
 

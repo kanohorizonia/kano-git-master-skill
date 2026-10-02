@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <CLI/CLI.hpp>
+#include <kano_unattended.hpp>
 #include "command_registry.hpp"
 #include "ai_utils.hpp"
 #include "runtime_path_layout.hpp"
@@ -713,6 +714,7 @@ std::vector<std::string> NormalizeLegacyArgs(int InArgc, char* InArgv[]) {
 } // namespace
 
 int main(int InArgc, char* InArgv[]) {
+    kano::infra::ConfigureUnattendedExecutionIfRequested();
     CLI::App app{
         "Kano Git Master — AI-powered Git CLI tools\n"
         "Standalone: kano-git <command> or kog <command>\n"

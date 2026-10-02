@@ -61,6 +61,7 @@ cli/out/
 
 # Local C++ build artifacts
 src/cpp/out/
+/src/cpp/CMakeUserPresets.json
 src/cpp/compile_commands.json
 src/cpp/releases/
 src/cpp/cmake_ninja_out.txt

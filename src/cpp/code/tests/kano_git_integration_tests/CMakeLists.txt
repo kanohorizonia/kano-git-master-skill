@@ -6,7 +6,7 @@ add_executable(kano_git_integration_tests
 )
 
 target_link_libraries(kano_git_integration_tests
-  PRIVATE Catch2::Catch2WithMain
+  PRIVATE kano_git_test_main
   PRIVATE kano_git_test_core
   PRIVATE kano_git_core
 )
@@ -18,5 +18,6 @@ target_include_directories(kano_git_integration_tests
 catch_discover_tests(
   kano_git_integration_tests
   TEST_PREFIX "integration::"
-  PROPERTIES LABELS "integration"
+  PROPERTIES ${KOG_TEST_PROPERTIES} LABELS "integration"
 )
+kano_infra_finalize_local_test_timeouts(300)

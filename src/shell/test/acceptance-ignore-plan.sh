@@ -7,6 +7,10 @@
 
 set -euo pipefail
 
+KANO_CPP_INFRA_CPP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../cpp" && pwd)"
+. "$KANO_CPP_INFRA_CPP_ROOT/shared/infra/scripts/lib/native_tool.sh"
+kano_cpp_infra_watchdog_enter "$0" "$@"
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 TIMESTAMP_UTC="$(date -u +%Y%m%dT%H%M%SZ)"
 TMP_ROOT="${TMPDIR:-/tmp}"

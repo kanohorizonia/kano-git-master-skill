@@ -2,6 +2,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CPP_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+. "$CPP_ROOT/shared/infra/scripts/lib/native_tool.sh"
+kano_cpp_infra_watchdog_enter "$0" "$@"
 if [[ -n "${1:-}" ]]; then
   WORKSPACE_ROOT="$(cd "$1" && pwd)"
 else

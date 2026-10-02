@@ -3,6 +3,7 @@
 // production process restored that terminal's modes and code pages.
 
 #include <windows.h>
+#include <kano_unattended.hpp>
 
 #include <cstddef>
 #include <cerrno>
@@ -209,6 +210,7 @@ auto WriteConsoleEvidence(const ScopedHandle& InOutput, const char* InBytes,
 } // namespace
 
 auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
+    kano::infra::ConfigureUnattendedExecution();
     if (InArgumentCount < 2 || InArguments[1] == nullptr ||
         InArguments[1][0] == L'\0') {
         return PrintFailure("missing-production-binary");
