@@ -411,9 +411,22 @@ and raw working versions before the caller edits the selected path:
 ./scripts/kog commit --exact-path src/file.cpp --overlap-checkpoint <id> -m "[Git][Chore] Own change (<ticket>)"
 ```
 
-The WIP checkpoint is pinned only under `refs/kog/checkpoints/<id>`; it is not
-an ancestor of the caller's own-only feature commit and is not pushed by this
-route. The receipt distinguishes `saved`, `tested`, `integrated`, `published`,
+Capture pins the base commit and each required staged and raw working blob
+under `refs/kog/checkpoint-snapshots/<id>/{base,staged/<n>,working/<n>}` before
+reporting `saved` or `restoreVerified`. These local archival refs preserve the
+original versions across Git pruning; retain them for recovery and inspection.
+Sensitive directories, including root and nested `secrets/` and `credentials/`,
+are rejected before archival writes.
+
+Own-only separation applies the selected path's Git clean conversion in a
+temporary object store and index. Working ancestor attributes override indexed
+fallback attributes; raw restoration bytes and staging intent remain separate
+from canonical merge bytes. This uses Git's `--attr-source` support and refuses
+the operation if conversion cannot be proven safely.
+
+The later WIP commits are pinned under `refs/kog/checkpoints/<id>`; they are not
+ancestors of the caller's own-only feature commit. Neither checkpoint ref family
+is pushed by this route. The receipt distinguishes `saved`, `tested`, `integrated`, `published`,
 and `consumed`. `recovery_required` means a local own commit exists but exact
 post-commit reconciliation was not proven; use its SHA and recovery ref for
 manual inspection, not a blind retry. The route rejects binary or inseparable
