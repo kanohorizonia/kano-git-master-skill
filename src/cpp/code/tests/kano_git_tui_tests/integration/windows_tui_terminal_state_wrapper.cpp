@@ -263,14 +263,17 @@ auto WriteConsoleEvidence(const ScopedHandle& InOutput, const char* InBytes,
 } // namespace
 
 auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
-    // KOG-BUG-0107 round 5: also stream stage events to stderr so the
+    // KOG-BUG-0107 round 5: also stream stage events to stdout so the
     // test's transcript capture (host->outputRead pipe) records them even
-    // when the stage-file path cannot be created on this runner.
+    // when the stage-file path cannot be created on this runner.  Use
+    // std::cout because the host binds both hStdOutput and hStdError to
+    // the same ConPTY output pipe and std::cout is the existing channel
+    // the rest of this file uses.
     auto StderrStage = [](const wchar_t* InTag) {
-        std::fputws(L"[KOG_BUG_0107 wrapper stage] ", stderr);
-        std::fputws(InTag, stderr);
-        std::fputwc(L'\n', stderr);
-        std::fflush(stderr);
+        std::fputws(L"[KOG_BUG_0107 wrapper stage] ", stdout);
+        std::fputws(InTag, stdout);
+        std::fputwc(L'\n', stdout);
+        std::fflush(stdout);
     };
     WriteStage(L"stage01_wrapper_entered");
     StderrStage(L"stage01_wrapper_entered");
