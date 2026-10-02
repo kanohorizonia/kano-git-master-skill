@@ -6,8 +6,10 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace kano::git::tests::functional {
@@ -18,6 +20,30 @@ struct RepoRemote {
     std::filesystem::path seed;
     std::filesystem::path clone;
     std::string branch{"main"};
+};
+
+struct IndexEntryState {
+    std::string mode;
+    std::string blob;
+    std::string bytes;
+};
+
+struct SyncPreservationState {
+    std::string head;
+    std::string status;
+    IndexEntryState trackedIndex;
+    IndexEntryState stagedNewIndex;
+    std::string trackedWorkingBytes;
+    std::string stagedNewWorkingBytes;
+    std::string untrackedWorkingBytes;
+    std::string stashList;
+};
+
+struct SyncPreservationFixture {
+    RepoRemote remote;
+    std::string baseHead;
+    std::string targetHead;
+    std::string preExistingStashSha;
 };
 
 auto RequireSuccess(const CommandResult& InResult, const std::string& InContext) -> void {
@@ -53,6 +79,12 @@ auto WriteTextFile(const std::filesystem::path& InPath, const std::string& InTex
     std::ofstream out(InPath, std::ios::binary | std::ios::trunc);
     REQUIRE(out.good());
     out << InText;
+}
+
+auto ReadFileBytes(const std::filesystem::path& InPath) -> std::string {
+    std::ifstream in(InPath, std::ios::binary);
+    REQUIRE(in.good());
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
 auto ConfigureIdentity(const std::filesystem::path& InRepo) -> void {
@@ -145,6 +177,150 @@ auto CreateRemote(const SandboxContext& InSandbox, const std::string& InName, co
     RequireSuccess(RunGit({"clone", out.bare.string(), out.clone.string()}, InSandbox.root), "clone remote");
     ConfigureIdentity(out.clone);
     return out;
+}
+
+auto GitOutput(const std::filesystem::path& InRepo,
+               const std::vector<std::string>& InArgs,
+               const std::string& InContext) -> std::string {
+    const auto result = RunGit(InArgs, InRepo);
+    RequireSuccess(result, InContext);
+    return result.stdoutText;
+}
+
+auto ReadIndexEntryState(const std::filesystem::path& InRepo,
+                         const std::string& InRelativePath) -> IndexEntryState {
+    const auto entry = GitOutput(
+        InRepo,
+        {"ls-files", "--stage", "--", InRelativePath},
+        "read index entry for " + InRelativePath);
+    std::istringstream parser(entry);
+    IndexEntryState out;
+    std::string stage;
+    parser >> out.mode >> out.blob >> stage;
+    INFO("index entry=" << entry);
+    REQUIRE_FALSE(out.mode.empty());
+    REQUIRE_FALSE(out.blob.empty());
+    REQUIRE(stage == "0");
+    out.bytes = GitOutput(InRepo, {"show", ":" + InRelativePath}, "read index bytes for " + InRelativePath);
+    return out;
+}
+
+auto CaptureSyncPreservationState(const std::filesystem::path& InRepo) -> SyncPreservationState {
+    return SyncPreservationState{
+        .head = TrimCopy(GitOutput(InRepo, {"rev-parse", "HEAD"}, "read preservation HEAD")),
+        .status = GitOutput(InRepo, {"status", "--short", "--untracked-files=all"}, "read preservation status"),
+        .trackedIndex = ReadIndexEntryState(InRepo, "tracked.txt"),
+        .stagedNewIndex = ReadIndexEntryState(InRepo, "staged-new.txt"),
+        .trackedWorkingBytes = ReadFileBytes(InRepo / "tracked.txt"),
+        .stagedNewWorkingBytes = ReadFileBytes(InRepo / "staged-new.txt"),
+        .untrackedWorkingBytes = ReadFileBytes(InRepo / "untracked.txt"),
+        .stashList = GitOutput(InRepo, {"stash", "list", "--format=%H%x09%gs"}, "read preservation stash list"),
+    };
+}
+
+auto RequirePreservationState(const SyncPreservationState& InBefore,
+                              const SyncPreservationState& InAfter) -> void {
+    REQUIRE(InAfter.status == InBefore.status);
+    REQUIRE(InAfter.trackedIndex.mode == InBefore.trackedIndex.mode);
+    REQUIRE(InAfter.trackedIndex.blob == InBefore.trackedIndex.blob);
+    REQUIRE(InAfter.trackedIndex.bytes == InBefore.trackedIndex.bytes);
+    REQUIRE(InAfter.stagedNewIndex.mode == InBefore.stagedNewIndex.mode);
+    REQUIRE(InAfter.stagedNewIndex.blob == InBefore.stagedNewIndex.blob);
+    REQUIRE(InAfter.stagedNewIndex.bytes == InBefore.stagedNewIndex.bytes);
+    REQUIRE(InAfter.trackedWorkingBytes == InBefore.trackedWorkingBytes);
+    REQUIRE(InAfter.stagedNewWorkingBytes == InBefore.stagedNewWorkingBytes);
+    REQUIRE(InAfter.untrackedWorkingBytes == InBefore.untrackedWorkingBytes);
+    REQUIRE(InAfter.stashList == InBefore.stashList);
+}
+
+auto CreateSyncPreservationFixture(const SandboxContext& InSandbox,
+                                   const std::string& InName,
+                                   const bool InConflictWithTrackedFile = false) -> SyncPreservationFixture {
+    auto remote = CreateRemote(InSandbox, InName);
+    for (const auto& repo : {remote.seed, remote.clone}) {
+        RequireSuccess(RunGit({"config", "core.autocrlf", "false"}, repo), "disable autocrlf for preservation fixture");
+    }
+
+    WriteTextFile(remote.seed / "tracked.txt", "base\n");
+    WriteTextFile(remote.seed / "remote.txt", "remote base\n");
+    RequireSuccess(RunGit({"add", "--", "tracked.txt", "remote.txt"}, remote.seed), "stage preservation baseline");
+    RequireSuccess(RunGit({"commit", "-m", "seed preservation baseline"}, remote.seed), "commit preservation baseline");
+    RequireSuccess(RunGit({"push", "origin", remote.branch}, remote.seed), "push preservation baseline");
+    RequireSuccess(RunGit({"fetch", "origin"}, remote.clone), "fetch preservation baseline");
+    RequireSuccess(RunGit({"reset", "--hard", "origin/" + remote.branch}, remote.clone), "reset clone to preservation baseline");
+    const auto baseHead = CurrentHeadSha(remote.clone);
+    REQUIRE(TrimCopy(GitOutput(remote.clone, {"status", "--short", "--untracked-files=all"}, "verify pristine preservation baseline")).empty());
+
+    WriteTextFile(remote.clone / "tracked.txt", "pre-existing stash content\n");
+    RequireSuccess(
+        RunGit({"stash", "push", "-m", "pre-existing-user-stash"}, remote.clone),
+        "create pre-existing user stash");
+    const auto preExistingStashSha = RefSha(remote.clone, "refs/stash");
+
+    if (InConflictWithTrackedFile) {
+        WriteTextFile(remote.seed / "tracked.txt", "incoming remote conflict\n");
+        RequireSuccess(RunGit({"add", "--", "tracked.txt"}, remote.seed), "stage conflicting remote update");
+    } else {
+        WriteTextFile(remote.seed / "remote.txt", "remote base\nremote incoming\n");
+        RequireSuccess(RunGit({"add", "--", "remote.txt"}, remote.seed), "stage independent remote update");
+    }
+    RequireSuccess(RunGit({"commit", "-m", "advance preservation remote"}, remote.seed), "commit preservation remote update");
+    RequireSuccess(RunGit({"push", "origin", remote.branch}, remote.seed), "push preservation remote update");
+    const auto targetHead = CurrentHeadSha(remote.seed);
+
+    WriteTextFile(remote.clone / "tracked.txt", "base\nstaged edit\n");
+    RequireSuccess(RunGit({"add", "--", "tracked.txt"}, remote.clone), "stage tracked preservation edit");
+    WriteTextFile(remote.clone / "tracked.txt", "base\nstaged edit\nunstaged edit\n");
+    WriteTextFile(remote.clone / "staged-new.txt", "staged new file bytes\n");
+    RequireSuccess(RunGit({"add", "--", "staged-new.txt"}, remote.clone), "stage new preservation file");
+    WriteTextFile(remote.clone / "untracked.txt", "independent untracked bytes\n");
+
+    const auto dirtyStatus = GitOutput(
+        remote.clone,
+        {"status", "--short", "--untracked-files=all"},
+        "verify owned preservation changes");
+    RequireContains(dirtyStatus, "MM tracked.txt");
+    RequireContains(dirtyStatus, "A  staged-new.txt");
+    RequireContains(dirtyStatus, "?? untracked.txt");
+
+    return SyncPreservationFixture{
+        .remote = std::move(remote),
+        .baseHead = baseHead,
+        .targetHead = targetHead,
+        .preExistingStashSha = preExistingStashSha,
+    };
+}
+
+auto InstallFetchFailureAfterPreflightHook(const SyncPreservationFixture& InFixture,
+                                           const std::filesystem::path& InMarker) -> std::filesystem::path {
+    const auto hook = (InFixture.remote.clone.parent_path() / "fail-after-preflight-uploadpack.sh").lexically_normal();
+    WriteTextFile(
+        hook,
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "count=0\n"
+        "if test -f \"$KOG_SYNC_FETCH_MARKER\"; then IFS= read -r count < \"$KOG_SYNC_FETCH_MARKER\"; fi\n"
+        "count=$((count + 1))\n"
+        "printf '%s\\n' \"$count\" > \"$KOG_SYNC_FETCH_MARKER\"\n"
+        "if test \"$count\" -ge 2; then\n"
+        "  printf '%s\\n' 'KOG fixture: injected actual-fetch failure after preflight' >&2\n"
+        "  exit 86\n"
+        "fi\n"
+        "exec git upload-pack \"$@\"\n");
+    std::error_code permissionsError;
+    std::filesystem::permissions(
+        hook,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add,
+        permissionsError);
+#if !defined(_WIN32)
+    REQUIRE_FALSE(permissionsError);
+#endif
+    RequireSuccess(
+        RunGit({"config", "remote.origin.uploadpack", "'" + hook.generic_string() + "'"}, InFixture.remote.clone),
+        "install task-local upload-pack failure hook");
+    REQUIRE_FALSE(std::filesystem::exists(InMarker));
+    return hook;
 }
 
 auto AddSubmodule(const std::filesystem::path& InParent,
@@ -481,6 +657,94 @@ TEST_CASE("recursive_sync_rebases_non_conflicting_diverged_repo", "[functional][
     RequireContains(output, "[.] SYNCED (origin, main)");
     REQUIRE(CurrentHeadSha(root) != localHead);
     REQUIRE(RefSha(root, "origin/main") == remoteHead);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("sync_autostash_preserves_staged_and_unstaged_intent", "[functional][sync][stash][KOG-BUG-0138]") {
+    const auto sandbox = CreateSandboxWorkspace("sync-autostash-preserves-index-intent");
+    const auto fixture = CreateSyncPreservationFixture(sandbox, "preserve-intent");
+    const auto before = CaptureSyncPreservationState(fixture.remote.clone);
+    REQUIRE(before.head == fixture.baseHead);
+    REQUIRE(RefSha(fixture.remote.clone, "refs/stash") == fixture.preExistingStashSha);
+
+    const auto result = RunSyncRecursive(
+        fixture.remote.clone,
+        {"--no-recursive", "--jobs", "1", "--native-no-cache"});
+    const auto output = NormalizeLineEndings(StripAnsi(result.stdoutText + "\n" + result.stderrText));
+    RequireSuccess(result, "sync preserves staged and unstaged intent");
+    RequireContains(output, "Auto-stashed local changes for .");
+    RequireContains(output, "Restored auto-stash for .");
+    RequireContains(output, "[.] SYNCED (origin, main)");
+
+    const auto after = CaptureSyncPreservationState(fixture.remote.clone);
+    REQUIRE(after.head == fixture.targetHead);
+    RequirePreservationState(before, after);
+    REQUIRE(RefSha(fixture.remote.clone, "refs/stash") == fixture.preExistingStashSha);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("sync_fetch_failure_restores_autostash_index_and_files", "[functional][sync][stash][fetch][KOG-BUG-0138]") {
+    const auto sandbox = CreateSandboxWorkspace("sync-fetch-failure-restores-autostash");
+    const auto fixture = CreateSyncPreservationFixture(sandbox, "fetch-failure");
+    const auto marker = (sandbox.root / "fetch-uploadpack-invocations.txt").lexically_normal();
+    InstallFetchFailureAfterPreflightHook(fixture, marker);
+    const auto before = CaptureSyncPreservationState(fixture.remote.clone);
+    REQUIRE(before.head == fixture.baseHead);
+
+    const auto result = RunKogWithEnv(
+        {"sync", "origin-latest", "--no-recursive", "--jobs", "1", "--native-no-cache"},
+        fixture.remote.clone,
+        {{"KOG_SYNC_FETCH_MARKER", marker.generic_string()}});
+    const auto output = NormalizeLineEndings(StripAnsi(result.stdoutText + "\n" + result.stderrText));
+    RequireFailure(result, "sync retains fetch failure after auto-stash recovery");
+    RequireContains(output, "Auto-stashed local changes for .");
+    RequireContains(output, "KOG fixture: injected actual-fetch failure after preflight");
+    RequireContains(output, "fetch failed");
+    RequireContains(output, "Restored auto-stash for . after fetch failure");
+    RequireNotContains(output, "[.] SYNCED");
+    REQUIRE(TrimCopy(ReadFileBytes(marker)) == "2");
+
+    const auto after = CaptureSyncPreservationState(fixture.remote.clone);
+    REQUIRE(after.head == before.head);
+    RequirePreservationState(before, after);
+    REQUIRE(RefSha(fixture.remote.clone, "refs/stash") == fixture.preExistingStashSha);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("sync_autostash_restore_conflict_retains_recovery_stash", "[functional][sync][stash][conflict][KOG-BUG-0138]") {
+    const auto sandbox = CreateSandboxWorkspace("sync-autostash-restore-conflict");
+    const auto fixture = CreateSyncPreservationFixture(sandbox, "restore-conflict", true);
+    const auto before = CaptureSyncPreservationState(fixture.remote.clone);
+    REQUIRE(before.head == fixture.baseHead);
+
+    const auto result = RunSyncRecursive(
+        fixture.remote.clone,
+        {"--no-recursive", "--jobs", "1", "--native-no-cache"});
+    const auto output = NormalizeLineEndings(StripAnsi(result.stdoutText + "\n" + result.stderrText));
+    RequireFailure(result, "sync fails when auto-stash restoration conflicts");
+    RequireContains(output, "Auto-stashed local changes for .");
+    RequireContains(output, "stash pop failed after sync");
+    RequireNotContains(output, "[.] SYNCED");
+    REQUIRE(CurrentHeadSha(fixture.remote.clone) == fixture.targetHead);
+
+    const auto stashList = GitOutput(
+        fixture.remote.clone,
+        {"stash", "list", "--format=%H%x09%gs"},
+        "read retained recovery stashes");
+    RequireContains(stashList, "kano-native-sync-autostash");
+    RequireContains(stashList, fixture.preExistingStashSha);
+    RequireContains(stashList, "pre-existing-user-stash");
+    REQUIRE(CountOccurrences(stashList, "\n") == 2);
+    REQUIRE(TrimCopy(GitOutput(fixture.remote.clone, {"rev-parse", "stash@{1}"}, "resolve pre-existing stash after restore conflict")) == fixture.preExistingStashSha);
+
+    REQUIRE(GitOutput(fixture.remote.clone, {"show", "stash@{0}^2:tracked.txt"}, "read retained staged tracked bytes") == before.trackedIndex.bytes);
+    REQUIRE(GitOutput(fixture.remote.clone, {"show", "stash@{0}:tracked.txt"}, "read retained working tracked bytes") == before.trackedWorkingBytes);
+    REQUIRE(GitOutput(fixture.remote.clone, {"show", "stash@{0}^2:staged-new.txt"}, "read retained staged new-file bytes") == before.stagedNewIndex.bytes);
+    REQUIRE(GitOutput(fixture.remote.clone, {"show", "stash@{0}:staged-new.txt"}, "read retained working new-file bytes") == before.stagedNewWorkingBytes);
+    REQUIRE(GitOutput(fixture.remote.clone, {"show", "stash@{0}^3:untracked.txt"}, "read retained untracked bytes") == before.untrackedWorkingBytes);
 
     RemoveSandboxWorkspace(sandbox);
 }
