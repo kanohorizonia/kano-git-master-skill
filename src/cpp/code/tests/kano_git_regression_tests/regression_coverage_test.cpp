@@ -513,14 +513,14 @@ TEST_CASE("audit JSONL fixtures are checked out LF-only",
 
 TEST_CASE("dogfood incident manifest maps stable source cases without execution claims",
           "[unit][regression][coverage][KG-TSK-0052]") {
-  constexpr std::size_t kExpectedIncidentCount = 37;
-  constexpr std::size_t kExpectedLinkedCaseCount = 91;
+  constexpr std::size_t kExpectedIncidentCount = 38;
+  constexpr std::size_t kExpectedLinkedCaseCount = 103;
   const auto manifest = RepoRoot() / "assets" / "regression" / "incidents.json";
   const auto loaded = LoadCoverageManifest(manifest);
 
   INFO(loaded.error);
   REQUIRE(loaded.ok);
-  REQUIRE(loaded.report.incidents.size() == kExpectedIncidentCount + 1);
+  REQUIRE(loaded.report.incidents.size() == kExpectedIncidentCount);
   REQUIRE(loaded.report.gaps.empty());
 
   const auto machineJsonIncident = std::find_if(
@@ -625,12 +625,12 @@ TEST_CASE("dogfood incident manifest maps stable source cases without execution 
   for (const auto &incident : loaded.report.incidents) {
     linkedCaseCount += incident.regressionCases.size();
   }
-  REQUIRE(linkedCaseCount == kExpectedLinkedCaseCount + 12);
+  REQUIRE(linkedCaseCount == kExpectedLinkedCaseCount);
 
   const auto text = RenderCoverageText(loaded.report);
   REQUIRE(text.find("execution_evidence=not-evaluated") != std::string::npos);
   REQUIRE(text.find("linked_cases=" +
-                    std::to_string(kExpectedLinkedCaseCount + 12)) !=
+                    std::to_string(kExpectedLinkedCaseCount)) !=
           std::string::npos);
   REQUIRE_FALSE(HasExactLine(text, "execution_evidence=passed"));
   REQUIRE_FALSE(HasExactLine(text, "execution_evidence=executed"));
@@ -639,7 +639,7 @@ TEST_CASE("dogfood incident manifest maps stable source cases without execution 
   REQUIRE(json.find("\"execution_evidence\": \"not-evaluated\"") !=
           std::string::npos);
   REQUIRE(json.find("\"linked_cases\": " +
-                    std::to_string(kExpectedLinkedCaseCount + 12)) !=
+                    std::to_string(kExpectedLinkedCaseCount)) !=
           std::string::npos);
 }
 
