@@ -1091,6 +1091,40 @@
           "mapping_state": "source-linked"
         }
       ]
+    },
+    {
+      "incident_id": "KOG-BUG-0138",
+      "incident_date": "2026-10-02",
+      "root_cause": "Native origin-latest restores auto-stash with plain stash pop, discarding the original index intent even when working bytes survive. Its post-stash fetch-error exit returns without restoring index, tracked working files or untracked files from the owned stash.",
+      "backlog_ref": "KOG-BUG-0138",
+      "change_ref": "bd415ce760a0537629265950b9002c6690716ff4",
+      "workflow_contracts": [
+        "unrelated-stage-preservation",
+        "converges-or-fails"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KOG-BUG-0138/staged-and-unstaged-intent",
+          "test_name": "sync_autostash_preserves_staged_and_unstaged_intent",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/recursive_sync_fixture_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-BUG-0138/fetch-failure-restoration",
+          "test_name": "sync_fetch_failure_restores_autostash_index_and_files",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/recursive_sync_fixture_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-BUG-0138/conflicted-recovery-stash",
+          "test_name": "sync_autostash_restore_conflict_retains_recovery_stash",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/recursive_sync_fixture_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
     }
   ]
 }
