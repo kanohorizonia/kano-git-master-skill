@@ -617,8 +617,8 @@ auto IsSensitiveCheckpointPath(const std::string& InPath) -> bool {
     return filename == ".env" || filename.starts_with(".env.") || filename == "id_rsa" ||
            filename == "credentials.json" || lower.ends_with(".pem") || lower.ends_with(".key") ||
            lower.ends_with(".p12") || lower.ends_with(".pfx") ||
-           lower.find("/secrets/") != std::string::npos ||
-           lower.find("/credentials/") != std::string::npos;
+           lower.starts_with("secrets/") || lower.find("/secrets/") != std::string::npos ||
+           lower.starts_with("credentials/") || lower.find("/credentials/") != std::string::npos;
 }
 
 auto HasSecret(const std::string& InBytes, const std::vector<SecretRule>& InRules) -> bool {
@@ -1106,6 +1106,52 @@ auto RunComplete(const std::filesystem::path& InRepo,
     return 0;
 }
 
+// Raw snapshot refs are archival anchors only. The later WIP commits still run
+// normal hooks/signing and remain separate from caller-owned history.
+auto PinCheckpointSnapshots(const QueueContext& InContext,
+                            const std::string& InId,
+                            const std::string& InBaseHead,
+                            const Json& InEntries,
+                            std::string* OutError) -> std::optional<Json> {
+    const auto prefix = "refs/kog/checkpoint-snapshots/" + InId;
+    Json snapshots = Json::array({Json{{"ref", prefix + "/base"}, {"oid", InBaseHead}}});
+    for (std::size_t index = 0; index < InEntries.size(); ++index) {
+        for (const auto& phase : {std::string{"staged"}, std::string{"working"}}) {
+            const auto& version = InEntries[index][phase];
+            if (!version.value("exists", false)) continue;
+            snapshots.push_back(Json{{"ref", prefix + "/" + phase + "/" + std::to_string(index)},
+                                     {"oid", version.value("oid", "")}});
+        }
+    }
+    for (const auto& snapshot : snapshots) {
+        const auto ref = snapshot.value("ref", "");
+        const auto oid = snapshot.value("oid", "");
+        if (GitCapture(InContext.repo, {"update-ref", ref, oid, std::string(oid.size(), '0')}).exitCode != 0 ||
+            GitValue(InContext.repo, {"rev-parse", "--verify", ref}, OutError) != std::optional<std::string>{oid}) {
+            if (OutError != nullptr) *OutError = "snapshot pin failed; inspect retained archival refs under " + prefix;
+            return std::nullopt;
+        }
+    }
+    for (const auto& snapshot : snapshots) {
+        if (GitValue(InContext.repo, {"rev-parse", "--verify", snapshot.value("ref", "")}, OutError) !=
+            std::optional<std::string>{snapshot.value("oid", "")}) {
+            if (OutError != nullptr) *OutError = "snapshot ref changed while pinning; inspect " + prefix;
+            return std::nullopt;
+        }
+    }
+    for (const auto& entry : InEntries) {
+        for (const auto& phase : {std::string{"head"}, std::string{"staged"}, std::string{"working"}}) {
+            const auto& version = entry[phase];
+            if (version.value("exists", false) &&
+                !GitBlobBytes(InContext.repo, version.value("oid", ""), OutError).has_value()) {
+                if (OutError != nullptr) *OutError = "pinned snapshot cannot be restored; inspect " + prefix;
+                return std::nullopt;
+            }
+        }
+    }
+    return snapshots;
+}
+
 auto RunCheckpointCapture(const std::filesystem::path& InRepo,
                           const std::string& InId,
                           const std::vector<std::string>& InPaths,
@@ -1200,7 +1246,23 @@ auto RunCheckpointCapture(const std::filesystem::path& InRepo,
             return PrintError("checkpoint_snapshot_drift", "working file changed before raw-blob storage");
         }
     }
-    const Json manifest{{"schema", "kog-cooperative-checkpoint-v1"},
+    const auto snapshots = PinCheckpointSnapshots(*context, InId, *head, entries, &error);
+    if (!snapshots.has_value()) return PrintError("checkpoint_pin_failed", error);
+    // Reference-transaction hooks run during pinning. Recheck source identity and
+    // bytes after those writes before describing the capture as saved.
+    if (GitValue(context->repo, {"rev-parse", "HEAD"}, &error) != head ||
+        GitValue(context->repo, {"symbolic-ref", "-q", "HEAD"}, &error) != branchRef ||
+        ParseIndexEntries(context->repo, &error) != originalIndex ||
+        std::filesystem::exists(*indexLock, ec)) {
+        return PrintError("checkpoint_snapshot_drift", "source changed while pinning; retained snapshot refs require inspection");
+    }
+    for (const auto& entry : entries) {
+        const auto current = WorkingEntry(context->repo, entry.value("path", ""), entry["staged"], entry["head"], rules, false, &error);
+        if (!current.has_value() || *current != entry["working"]) {
+            return PrintError("checkpoint_snapshot_drift", "working file changed while pinning; retained snapshot refs require inspection");
+        }
+    }
+    const Json manifest{{"snapshotRefs", *snapshots}, {"schema", "kog-cooperative-checkpoint-v1"},
                         {"id", InId}, {"repo", context->repo.generic_string()},
                         {"baseHead", *head}, {"branchRef", *branchRef},
                         {"source", Trim(InSource)}, {"workItem", Trim(InWorkItem)},
@@ -1272,6 +1334,98 @@ auto IsBinaryCheckpointOverlap(const std::string& InPath, const std::string& InB
     return InBytes.find('\0') != std::string::npos || lower.ends_with(".uasset") || lower.ends_with(".umap") ||
            lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") ||
            lower.ends_with(".zip") || lower.ends_with(".pdf");
+}
+
+auto CleanCheckpointText(const std::filesystem::path& InRepo,
+                         const std::string& InPath,
+                         const std::filesystem::path& InRawFile,
+                         const std::vector<SecretRule>& InRules,
+                         std::string* OutError) -> std::optional<std::string> {
+    const auto originalObjects = GitValue(InRepo, {"rev-parse", "--git-path", "objects"}, OutError);
+    if (!originalObjects.has_value()) return std::nullopt;
+    auto originalObjectPath = std::filesystem::path(*originalObjects);
+    if (originalObjectPath.is_relative()) originalObjectPath = InRepo / originalObjectPath;
+    const auto alternate = originalObjectPath.lexically_normal().generic_string();
+    if (alternate.find_first_of("\r\n") != std::string::npos) {
+        if (OutError != nullptr) *OutError = "object directory cannot be represented as a safe alternate";
+        return std::nullopt;
+    }
+    // Git performs path-specific conversion in a disposable object store. Never
+    // archive filter output before it has passed the same secret rules as raw WIP.
+    struct QuarantineObjects {
+        std::filesystem::path path;
+        ~QuarantineObjects() {
+            std::error_code ignored;
+            std::filesystem::remove_all(path, ignored);
+        }
+    } quarantine{InRawFile.parent_path() / ("clean-objects-" + TimestampId())};
+    std::error_code ec;
+    if (!std::filesystem::create_directory(quarantine.path, ec) || ec) {
+        if (OutError != nullptr) *OutError = "cannot create checkpoint clean quarantine";
+        return std::nullopt;
+    }
+    // Existing objects remain readable for index attributes and repository-aware
+    // filters. Git writes only to the quarantine, never its read-only alternate.
+    if (!WriteCheckpointBytes(quarantine.path / "info" / "alternates", alternate + "\n")) {
+        if (OutError != nullptr) *OutError = "cannot configure checkpoint clean quarantine";
+        return std::nullopt;
+    }
+    ScopedEnvironment objects("GIT_OBJECT_DIRECTORY", quarantine.path.string());
+    // hash-object does not load index attributes. Build the effective attribute
+    // tree in quarantine: working ancestor files override indexed files, while
+    // missing working files retain the index fallback used by normal Git add.
+    const auto index = GitValue(InRepo, {"rev-parse", "--git-path", "index"}, OutError);
+    if (!index.has_value()) return std::nullopt;
+    auto sourceIndex = std::filesystem::path(*index);
+    if (sourceIndex.is_relative()) sourceIndex = InRepo / sourceIndex;
+    const auto indexHash = GitValue(InRepo, {"hash-object", "--no-filters", "--", sourceIndex.string()}, OutError);
+    if (!indexHash.has_value()) return std::nullopt;
+    const auto attributeIndex = quarantine.path / "attributes.index";
+    std::filesystem::copy_file(sourceIndex, attributeIndex, std::filesystem::copy_options::none, ec);
+    if (ec || GitValue(InRepo, {"hash-object", "--no-filters", "--", sourceIndex.string()}, OutError) != indexHash) {
+        if (OutError != nullptr) *OutError = "index changed while preparing clean attributes";
+        return std::nullopt;
+    }
+    std::optional<std::string> attributeTree;
+    {
+        ScopedEnvironment attributesIndex("GIT_INDEX_FILE", attributeIndex.string());
+        auto directory = std::filesystem::path(InPath).parent_path();
+        while (true) {
+            const auto attributePath = directory / ".gitattributes";
+            const auto source = InRepo / attributePath;
+            const auto status = std::filesystem::symlink_status(source, ec);
+            if (ec && ec != std::errc::no_such_file_or_directory) {
+                if (OutError != nullptr) *OutError = "cannot inspect clean attributes";
+                return std::nullopt;
+            }
+            ec.clear();
+            // Git does not follow symbolic links when reading attributes.
+            if (std::filesystem::is_regular_file(status)) {
+                const auto bytes = ReadCheckpointBytes(source, OutError);
+                const auto attributeFile = quarantine.path / "working-attributes";
+                if (!bytes.has_value() || !WriteCheckpointBytes(attributeFile, *bytes)) return std::nullopt;
+                const auto blob = GitValue(InRepo, {"hash-object", "--no-filters", "-w", "--", attributeFile.string()}, OutError);
+                if (!blob.has_value() || GitCapture(InRepo, {"update-index", "--add", "--cacheinfo",
+                        "100644," + *blob + "," + attributePath.generic_string()}).exitCode != 0) {
+                    if (OutError != nullptr) *OutError = "cannot prepare effective clean attributes";
+                    return std::nullopt;
+                }
+            }
+            if (directory.empty()) break;
+            directory = directory.parent_path();
+        }
+        attributeTree = GitValue(InRepo, {"write-tree"}, OutError);
+    }
+    if (!attributeTree.has_value()) return std::nullopt;
+    const auto oid = GitValue(InRepo, {"--attr-source=" + *attributeTree, "hash-object", "--path=" + InPath,
+                                     "-w", "--", InRawFile.string()}, OutError);
+    if (!oid.has_value()) return std::nullopt;
+    const auto bytes = GitBlobBytes(InRepo, *oid, OutError);
+    if (bytes.has_value() && HasSecret(*bytes, InRules)) {
+        if (OutError != nullptr) *OutError = "secret_detected";
+        return std::nullopt;
+    }
+    return bytes;
 }
 
 auto PrepareOwnOverlap(const QueueContext& InContext,
@@ -1353,6 +1507,21 @@ auto PrepareOwnOverlap(const QueueContext& InContext,
             if (OutBlocker != nullptr) *OutBlocker = "checkpoint_temp_failed";
             return std::nullopt;
         }
+        const auto cleanBefore = CleanCheckpointText(InContext.repo, path.path, beforeFile, InRules, OutError);
+        const auto cleanFinal = CleanCheckpointText(InContext.repo, path.path, finalFile, InRules, OutError);
+        if (!cleanBefore.has_value() || !cleanFinal.has_value()) {
+            if (OutBlocker != nullptr) *OutBlocker = OutError != nullptr && *OutError == "secret_detected"
+                ? "secret_detected" : "checkpoint_normalization_failed";
+            return std::nullopt;
+        }
+        if (IsBinaryCheckpointOverlap(path.path, *cleanBefore) || IsBinaryCheckpointOverlap(path.path, *cleanFinal)) {
+            if (OutBlocker != nullptr) *OutBlocker = "binary_overlap";
+            return std::nullopt;
+        }
+        if (!WriteCheckpointBytes(beforeFile, *cleanBefore) || !WriteCheckpointBytes(finalFile, *cleanFinal)) {
+            if (OutBlocker != nullptr) *OutBlocker = "checkpoint_temp_failed";
+            return std::nullopt;
+        }
         auto own = MergeCheckpointText(InContext.repo, finalFile, beforeFile, baseFile, OutBlocker);
         if (!own.has_value()) return std::nullopt;
         if (!WriteCheckpointBytes(ownFile, *own)) {
@@ -1360,9 +1529,9 @@ auto PrepareOwnOverlap(const QueueContext& InContext,
             return std::nullopt;
         }
         const auto replay = MergeCheckpointText(InContext.repo, beforeFile, baseFile, ownFile, OutBlocker);
-        if (!replay.has_value() || *replay != *final) {
+        if (!replay.has_value() || *replay != *cleanFinal) {
             if (OutBlocker != nullptr) *OutBlocker = "inseparable_overlap";
-            if (OutError != nullptr) *OutError = "own and pre-existing text could not be replayed byte-identically";
+            if (OutError != nullptr) *OutError = "own and pre-existing text could not be replayed in canonical form";
             return std::nullopt;
         }
         const auto restaged = MergeCheckpointText(InContext.repo, stagedFile, baseFile, ownFile, OutBlocker);

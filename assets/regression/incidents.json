@@ -1095,9 +1095,9 @@
     {
       "incident_id": "KOG-TSK-0142",
       "incident_date": "2026-09-29",
-      "root_cause": "The exact-path route could isolate unrelated staged paths but had no provenance-preserving recovery for a selected path with pre-existing staged and working changes; broad converge and harvest rejected a dirty target or collapsed those versions, blocking a verified caller-owned commit.",
+      "root_cause": "The exact-path route could isolate unrelated staged paths but had no provenance-preserving recovery for a selected path with pre-existing staged and working changes; broad converge and harvest rejected a dirty target or collapsed those versions, blocking a verified caller-owned commit. PR6 review additionally reproduced raw CRLF versus canonical LF separation failure, root sensitive-directory archival, and loose captured working blobs becoming unreachable under prune before materialization.",
       "backlog_ref": "KOG-TSK-0142",
-      "change_ref": "KOG-TSK-0142",
+      "change_ref": "https://github.com/kanohorizonia/kano-git-master-skill/pull/6",
       "workflow_contracts": [
         "unrelated-stage-preservation",
         "agent-mode-plan"
@@ -1128,6 +1128,62 @@
           "case_id": "KOG-TSK-0142/remote-and-hook-boundary",
           "test_name": "cooperative checkpoint keeps a diverged remote and a rejecting hook outside own history",
           "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/agent_queue_exact_commit_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-TSK-0142/clean-filter-eol-proof",
+          "test_name": "cooperative checkpoint separates path-normalized LF and CRLF edits without changing raw WIP",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/agent_queue_exact_commit_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-TSK-0142/capture-prune-recovery",
+          "test_name": "cooperative checkpoint captured blobs survive prune before own-only commit",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/agent_queue_exact_commit_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-TSK-0142/sensitive-directory-boundaries",
+          "test_name": "cooperative checkpoint excludes root and nested sensitive directories before writing objects",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/agent_queue_exact_commit_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-TSK-0142/clean-filter-secret-refusal",
+          "test_name": "cooperative checkpoint refuses secret clean-filter output without archiving it",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/agent_queue_exact_commit_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-TSK-0142/all-snapshots-prune",
+          "test_name": "cooperative checkpoint pins base staged and raw working snapshots across destructive prune",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/agent_queue_exact_commit_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-TSK-0142/index-attributes-fallback",
+          "test_name": "cooperative checkpoint uses index attributes when the working attributes file is deleted",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/agent_queue_exact_commit_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-TSK-0142/capture-pin-hook-drift",
+          "test_name": "cooperative checkpoint detects reference-hook writer drift before reporting saved",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/agent_queue_exact_commit_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-TSK-0142/working-attributes-precedence",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/agent_queue_exact_commit_test.cpp",
+          "test_name": "cooperative checkpoint preserves working ancestor attributes over indexed fallback",
           "test_kind": "functional",
           "mapping_state": "source-linked"
         }

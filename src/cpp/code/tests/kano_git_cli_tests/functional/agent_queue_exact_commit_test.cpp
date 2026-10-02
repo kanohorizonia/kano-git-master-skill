@@ -1,6 +1,7 @@
 #include "functional_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -310,25 +311,47 @@ TEST_CASE("exact-path distinguishes queue contention from lock acquisition error
     RemoveSandboxWorkspace(sandbox);
 }
 
-TEST_CASE("cooperative checkpoint preserves staged and working versions before an own-only commit",
-          "[functional][KOG-TSK-0142][checkpoint]") {
-    auto [sandbox, repo] = InitRepo("cooperative-checkpoint", {"shared.txt", "other.txt"});
+namespace {
+auto VerifyCheckpointOwnCommit(const bool InCrlf, const bool InPrune, const bool InMissingAttributes = false,
+                               const bool InWorkingAttributes = false) -> void {
+    const std::string sharedPath = InWorkingAttributes ? "nested/shared.txt" : "shared.txt";
+    auto [sandbox, repo] = InitRepo("cooperative-checkpoint", {sharedPath, "other.txt"});
     RequireSuccess(RunGit({"branch", "-m", "codex/cooperative-test"}, repo), "select owned branch");
+    RequireSuccess(RunGit({"config", "core.autocrlf", InCrlf ? "true" : "false"}, repo), "configure checkout normalization");
+    WriteText(repo / ".gitattributes", "*.txt text=auto\n");
+    RequireSuccess(RunGit({"add", ".gitattributes"}, repo), "stage text attributes");
+    RequireSuccess(RunGit({"commit", "-m", "text attributes"}, repo), "commit text attributes");
+    if (InWorkingAttributes) {
+        WriteText(repo / "nested/.gitattributes", "*.txt -text\n");
+        RequireSuccess(RunGit({"add", "nested/.gitattributes"}, repo), "stage indexed nested attributes");
+        RequireSuccess(RunGit({"commit", "-m", "indexed nested attributes"}, repo), "commit indexed nested attributes");
+        WriteText(repo / "nested/.gitattributes", "*.txt text=auto\n");
+    }
+    const auto attributeStageBefore = GitOutput(repo, {"ls-files", "--stage", "--", ".gitattributes", "nested/.gitattributes"});
+    const auto raw = [InCrlf](const std::string& bytes) {
+        if (!InCrlf) return bytes;
+        std::string result;
+        for (const char ch : bytes) {
+            if (ch == '\n') result += '\r';
+            result += ch;
+        }
+        return result;
+    };
     const std::string base = "base first\ncontext a\nbase middle\ncontext b\ncontext c\ncontext d\nbase end\n";
     const std::string staged = "pre-existing staged\ncontext a\nbase middle\ncontext b\ncontext c\ncontext d\nbase end\n";
     const std::string working = "pre-existing staged\ncontext a\npre-existing working\ncontext b\ncontext c\ncontext d\nbase end\n";
     const std::string final = "pre-existing staged\ncontext a\npre-existing working\ncontext b\ncontext c\ncontext d\nown change\n";
     const std::string own = "base first\ncontext a\nbase middle\ncontext b\ncontext c\ncontext d\nown change\n";
     const std::string restaged = "pre-existing staged\ncontext a\nbase middle\ncontext b\ncontext c\ncontext d\nown change\n";
-    WriteText(repo / "shared.txt", base);
-    RequireSuccess(RunGit({"add", "shared.txt"}, repo), "stage three-line base");
+    WriteText(repo / sharedPath, raw(base));
+    RequireSuccess(RunGit({"add", sharedPath}, repo), "stage three-line base");
     RequireSuccess(RunGit({"commit", "-m", "three-line base"}, repo), "commit three-line base");
-    WriteText(repo / "shared.txt", staged);
-    RequireSuccess(RunGit({"add", "shared.txt"}, repo), "stage pre-existing first version");
-    const auto stagedBefore = GitOutput(repo, {"ls-files", "--stage", "shared.txt"});
-    WriteText(repo / "shared.txt", working);
-    const auto workingBefore = ReadText(repo / "shared.txt");
-    REQUIRE(stagedBefore.find("shared.txt") != std::string::npos);
+    WriteText(repo / sharedPath, raw(staged));
+    RequireSuccess(RunGit({"add", sharedPath}, repo), "stage pre-existing first version");
+    const auto stagedBefore = GitOutput(repo, {"ls-files", "--stage", sharedPath});
+    WriteText(repo / sharedPath, raw(working));
+    const auto workingBefore = ReadText(repo / sharedPath);
+    REQUIRE(stagedBefore.find(sharedPath) != std::string::npos);
 
     std::vector<std::string> unrelatedStageBefore;
     for (int index = 0; index < 10; ++index) {
@@ -343,28 +366,38 @@ TEST_CASE("cooperative checkpoint preserves staged and working versions before a
     }
 
     auto result = RunKog({"agent-queue", "checkpoint", "capture", "--id", "overlap-one",
-                          "--path", "shared.txt", "--source", "pre-existing/unknown",
+                          "--path", sharedPath, "--source", "pre-existing/unknown",
                           "--work-item", "KOG-TSK-0142", "--owner-stable"}, repo);
     RequireSuccess(result, "capture pre-existing versions");
     RequireContains(result.stdoutText, "\"status\": \"saved\"");
     RequireContains(result.stdoutText, "\"restoreVerified\": true");
-    REQUIRE(GitOutput(repo, {"ls-files", "--stage", "shared.txt"}) == stagedBefore);
-    REQUIRE(ReadText(repo / "shared.txt") == workingBefore);
+    REQUIRE(GitOutput(repo, {"ls-files", "--stage", sharedPath}) == stagedBefore);
+    REQUIRE(ReadText(repo / sharedPath) == workingBefore);
 
-    WriteText(repo / "shared.txt", final);
-    result = RunKog({"commit", "--exact-path", "shared.txt", "--overlap-checkpoint", "overlap-one",
+    auto rawOid = GitOutput(repo, {"hash-object", "--no-filters", "--", sharedPath});
+    rawOid.erase(rawOid.find_first_of("\r\n"));
+    if (InMissingAttributes) {
+        std::filesystem::remove(repo / ".gitattributes");
+        RequireSuccess(RunGit({"config", "core.autocrlf", "false"}, repo), "require indexed text attributes for normalization");
+    }
+    WriteText(repo / sharedPath, raw(final));
+    if (InPrune) {
+        RequireSuccess(RunGit({"gc", "--prune=now"}, repo), "prune after captured original file changes");
+        REQUIRE(GitOutput(repo, {"cat-file", "blob", rawOid}) == workingBefore);
+    }
+    result = RunKog({"commit", "--exact-path", sharedPath, "--overlap-checkpoint", "overlap-one",
                      "-m", "[Test][Chore] own only (KOG-TSK-0142)"}, repo);
     RequireSuccess(result, "checkpoint then own-only commit");
     RequireContains(result.stdoutText, "\"status\": \"committed\"");
     RequireContains(result.stdoutText, "\"checkpointStatus\": \"saved\"");
     RequireContains(result.stdoutText, "\"published\": false");
-    REQUIRE(GitOutput(repo, {"show", "HEAD:shared.txt"}) == own);
-    REQUIRE(GitOutput(repo, {"show", "HEAD^:shared.txt"}) == base);
-    REQUIRE(GitOutput(repo, {"show", "refs/kog/checkpoints/overlap-one:shared.txt"}) == workingBefore);
-    REQUIRE(GitOutput(repo, {"show", "refs/kog/checkpoints/overlap-one^:shared.txt"}) == staged);
-    REQUIRE(GitOutput(repo, {"show", ":shared.txt"}) == restaged);
-    REQUIRE(ReadText(repo / "shared.txt") == final);
-    REQUIRE(GitOutput(repo, {"ls-files", "--stage", "shared.txt"}) != stagedBefore);
+    REQUIRE(GitOutput(repo, {"show", "HEAD:" + sharedPath}) == own);
+    REQUIRE(GitOutput(repo, {"show", "HEAD^:" + sharedPath}) == base);
+    REQUIRE(GitOutput(repo, {"show", "refs/kog/checkpoints/overlap-one:" + sharedPath}) == workingBefore);
+    REQUIRE(GitOutput(repo, {"show", "refs/kog/checkpoints/overlap-one^:" + sharedPath}) == staged);
+    REQUIRE(GitOutput(repo, {"show", ":" + sharedPath}) == restaged);
+    REQUIRE(ReadText(repo / sharedPath) == raw(final));
+    REQUIRE(GitOutput(repo, {"ls-files", "--stage", sharedPath}) != stagedBefore);
     for (int index = 0; index < 10; ++index) {
         const auto path = "unrelated-" + std::to_string(index) + ".txt";
         RequireContains(GitOutput(repo, {"status", "--short", "--", path}), "AM " + path);
@@ -377,6 +410,173 @@ TEST_CASE("cooperative checkpoint preserves staged and working versions before a
     REQUIRE(GitOutput(repo, {"rev-parse", "refs/kog/checkpoints/overlap-one"}) !=
             GitOutput(repo, {"rev-parse", "HEAD^"}));
     REQUIRE(RunGit({"merge-base", "--is-ancestor", "refs/kog/checkpoints/overlap-one", "HEAD"}, repo).exitCode != 0);
+    REQUIRE(GitOutput(repo, {"ls-files", "--stage", "--", ".gitattributes", "nested/.gitattributes"}) == attributeStageBefore);
+    if (InMissingAttributes) REQUIRE_FALSE(std::filesystem::exists(repo / ".gitattributes"));
+    if (InWorkingAttributes) REQUIRE(ReadText(repo / "nested/.gitattributes") == "*.txt text=auto\n");
+    RemoveSandboxWorkspace(sandbox);
+}
+} // namespace
+
+TEST_CASE("cooperative checkpoint preserves staged and working versions before an own-only commit",
+          "[functional][KOG-TSK-0142][checkpoint]") {
+    VerifyCheckpointOwnCommit(false, false);
+}
+
+TEST_CASE("cooperative checkpoint separates path-normalized LF and CRLF edits without changing raw WIP",
+          "[functional][KOG-TSK-0142][checkpoint][checkpoint-repair]") {
+    VerifyCheckpointOwnCommit(GENERATE(false, true), false);
+}
+
+TEST_CASE("cooperative checkpoint captured blobs survive prune before own-only commit",
+          "[functional][KOG-TSK-0142][checkpoint][checkpoint-repair]") {
+    VerifyCheckpointOwnCommit(GENERATE(false, true), true);
+}
+
+TEST_CASE("cooperative checkpoint uses index attributes when the working attributes file is deleted",
+          "[functional][KOG-TSK-0142][checkpoint][checkpoint-repair]") {
+    VerifyCheckpointOwnCommit(true, false, true);
+}
+
+TEST_CASE("cooperative checkpoint preserves working ancestor attributes over indexed fallback",
+          "[functional][KOG-TSK-0142][checkpoint][checkpoint-repair]") {
+    VerifyCheckpointOwnCommit(true, false, true, true);
+}
+
+TEST_CASE("cooperative checkpoint detects reference-hook writer drift before reporting saved",
+          "[functional][KOG-TSK-0142][checkpoint][checkpoint-repair]") {
+    auto [sandbox, repo] = InitRepo("checkpoint-pin-writer", {"shared.txt"});
+    WriteText(repo / "shared.txt", "captured WIP\n");
+    const auto headBefore = GitOutput(repo, {"rev-parse", "HEAD"});
+    const auto indexBefore = GitOutput(repo, {"ls-files", "--stage"});
+    const auto hook = repo / ".git/hooks/reference-transaction";
+    WriteText(hook, "#!/bin/sh\nif [ \"$1\" = committed ]; then\n"
+                    "  while read old new ref; do\n"
+                    "    case \"$ref\" in refs/kog/checkpoint-snapshots/*/working/*) printf 'hook writer drift\\n' > shared.txt ;; esac\n"
+                    "  done\nfi\n");
+    std::filesystem::permissions(hook, std::filesystem::perms::owner_exec,
+                                  std::filesystem::perm_options::add);
+    const auto result = RunKog({"agent-queue", "checkpoint", "capture", "--id", "hook-drift",
+                               "--path", "shared.txt", "--source", "pre-existing/unknown",
+                               "--work-item", "KOG-TSK-0142", "--owner-stable"}, repo);
+    REQUIRE(result.exitCode != 0);
+    RequireContains(result.stderrText, "checkpoint_snapshot_drift");
+    REQUIRE_FALSE(std::filesystem::exists(repo / ".git/kano-agent-queue/checkpoints/hook-drift/manifest.json"));
+    REQUIRE(ReadText(repo / "shared.txt") == "hook writer drift\n");
+    REQUIRE(GitOutput(repo, {"rev-parse", "HEAD"}) == headBefore);
+    REQUIRE(GitOutput(repo, {"ls-files", "--stage"}) == indexBefore);
+    REQUIRE(GitOutput(repo, {"show", "refs/kog/checkpoint-snapshots/hook-drift/working/0"}) == "captured WIP\n");
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("cooperative checkpoint refuses secret clean-filter output without archiving it",
+          "[functional][KOG-TSK-0142][checkpoint][checkpoint-repair]") {
+    const bool dryRun = GENERATE(false, true);
+    auto [sandbox, repo] = InitRepo("checkpoint-filter-secret", {"shared.txt"});
+    RequireSuccess(RunGit({"branch", "-m", "codex/filter-secret"}, repo), "owned branch");
+    WriteText(repo / ".gitattributes", "shared.txt filter=opaque-clean\n");
+    RequireSuccess(RunGit({"add", ".gitattributes"}, repo), "stage path filter");
+    RequireSuccess(RunGit({"commit", "-m", "path filter"}, repo), "commit path filter");
+    // Deliberately recognizable fake secret pattern; no credential is used.
+    const std::string filterOutput = "api_key='abcdefghijklmnopqrstuvwxyz012345'\n";
+    WriteText(repo / ".kano/tmp/clean-output.txt", filterOutput);
+    auto oid = GitOutput(repo, {"hash-object", "--no-filters", "--", ".kano/tmp/clean-output.txt"});
+    oid.erase(oid.find_first_of("\r\n"));
+    RequireSuccess(RunGit({"config", "filter.opaque-clean.clean",
+                          "printf \"api_key='abcdefghijklmnopqrstuvwxyz012345'\\n\""}, repo), "configure fake secret-producing filter");
+    RequireSuccess(RunGit({"config", "filter.opaque-clean.required", "true"}, repo), "require filter");
+    WriteText(repo / "shared.txt", "harmless pre-existing working text\n");
+    RequireSuccess(RunKog({"agent-queue", "checkpoint", "capture", "--id", "filter-secret",
+                           "--path", "shared.txt", "--source", "pre-existing/unknown",
+                           "--work-item", "KOG-TSK-0142", "--owner-stable"}, repo), "capture raw harmless WIP");
+    WriteText(repo / "shared.txt", "harmless caller edit\n");
+    const auto headBefore = GitOutput(repo, {"rev-parse", "HEAD"});
+    const auto indexBefore = GitOutput(repo, {"ls-files", "--stage"});
+    const auto refsBefore = GitOutput(repo, {"show-ref"});
+    const auto objectsBefore = GitOutput(repo, {"count-objects", "-v"});
+    REQUIRE(RunGit({"cat-file", "-e", oid}, repo).exitCode != 0);
+    std::vector<std::string> args{"commit", "--exact-path", "shared.txt", "--overlap-checkpoint", "filter-secret",
+                                  "-m", "[Test][Chore] filter refusal (KOG-TSK-0142)"};
+    if (dryRun) args.push_back("--dry-run");
+    const auto result = RunKog(args, repo);
+    REQUIRE(result.exitCode != 0);
+    RequireContains(result.stderrText, "secret_detected");
+    REQUIRE(RunGit({"cat-file", "-e", oid}, repo).exitCode != 0);
+    REQUIRE(GitOutput(repo, {"rev-parse", "HEAD"}) == headBefore);
+    REQUIRE(GitOutput(repo, {"ls-files", "--stage"}) == indexBefore);
+    REQUIRE(GitOutput(repo, {"show-ref"}) == refsBefore);
+    REQUIRE(GitOutput(repo, {"count-objects", "-v"}) == objectsBefore);
+    REQUIRE(ReadText(repo / "shared.txt") == "harmless caller edit\n");
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("cooperative checkpoint pins base staged and raw working snapshots across destructive prune",
+          "[functional][KOG-TSK-0142][checkpoint][checkpoint-repair]") {
+    auto [sandbox, repo] = InitRepo("checkpoint-all-snapshots", {"shared.txt"});
+    RequireSuccess(RunGit({"branch", "-m", "codex/all-snapshots"}, repo), "owned branch");
+    const auto trim = [](std::string value) { value.erase(value.find_first_of("\r\n")); return value; };
+    const auto base = trim(GitOutput(repo, {"rev-parse", "HEAD"}));
+    WriteText(repo / "shared.txt", "captured staged text\n");
+    RequireSuccess(RunGit({"add", "shared.txt"}, repo), "stage captured snapshot");
+    const auto staged = trim(GitOutput(repo, {"rev-parse", ":shared.txt"}));
+    WriteText(repo / "shared.txt", "captured raw working text\r\n");
+    const auto working = trim(GitOutput(repo, {"hash-object", "--no-filters", "--", "shared.txt"}));
+    RequireSuccess(RunKog({"agent-queue", "checkpoint", "capture", "--id", "all-snapshots",
+                           "--path", "shared.txt", "--source", "pre-existing/unknown",
+                           "--work-item", "KOG-TSK-0142", "--owner-stable"}, repo), "capture all versions");
+    const std::string prefix = "refs/kog/checkpoint-snapshots/all-snapshots/";
+    REQUIRE(trim(GitOutput(repo, {"rev-parse", prefix + "base"})) == base);
+    REQUIRE(trim(GitOutput(repo, {"rev-parse", prefix + "staged/0"})) == staged);
+    REQUIRE(trim(GitOutput(repo, {"rev-parse", prefix + "working/0"})) == working);
+    // Disposable fixture only: make every captured version unreachable from
+    // branch/index/reflog so the archival refs provide the sole retention.
+    WriteText(repo / "shared.txt", "new unrelated root state\n");
+    RequireSuccess(RunGit({"add", "shared.txt"}, repo), "replace fixture index snapshot");
+    const auto tree = trim(GitOutput(repo, {"write-tree"}));
+    const auto newRoot = trim(GitOutput(repo, {"commit-tree", tree, "-m", "fixture independent root"}));
+    RequireSuccess(RunGit({"update-ref", "HEAD", newRoot, base}, repo), "replace fixture branch ancestry");
+    RequireSuccess(RunGit({"reflog", "expire", "--expire=now", "--all"}, repo), "expire fixture reflogs");
+    RequireSuccess(RunGit({"gc", "--prune=now"}, repo), "prune fixture unreachable objects");
+    REQUIRE(GitOutput(repo, {"show", base + ":shared.txt"}) == "seed shared.txt\n");
+    REQUIRE(GitOutput(repo, {"cat-file", "blob", staged}) == "captured staged text\n");
+    REQUIRE(GitOutput(repo, {"cat-file", "blob", working}) == "captured raw working text\r\n");
+    REQUIRE(ReadText(repo / "shared.txt") == "new unrelated root state\n");
+    REQUIRE(GitOutput(repo, {"show", ":shared.txt"}) == "new unrelated root state\n");
+    const auto result = RunKog({"commit", "--exact-path", "shared.txt", "--overlap-checkpoint", "all-snapshots",
+                               "-m", "[Test][Chore] reject drift (KOG-TSK-0142)"}, repo);
+    REQUIRE(result.exitCode != 0);
+    RequireContains(result.stderrText, "stale_base_head");
+    REQUIRE(trim(GitOutput(repo, {"rev-parse", "HEAD"})) == newRoot);
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("cooperative checkpoint excludes root and nested sensitive directories before writing objects",
+          "[functional][KOG-TSK-0142][checkpoint][checkpoint-repair]") {
+    const auto sensitive = GENERATE(std::string{"secrets/token.bin"}, std::string{"credentials/service.dat"},
+                                    std::string{"nested/secrets/token.bin"}, std::string{"nested/credentials/service.dat"});
+    auto [sandbox, repo] = InitRepo("checkpoint-sensitive-directories", {"ordinary.txt"});
+    // Opaque harmless fixture deliberately does not match a content secret rule.
+    WriteText(repo / sensitive, std::string{"fixture\0opaque-value", 20});
+    WriteText(repo / "ordinary.txt", "ordinary pre-existing working state\n");
+    const auto headBefore = GitOutput(repo, {"rev-parse", "HEAD"});
+    const auto indexBefore = GitOutput(repo, {"ls-files", "--stage"});
+    const auto objectsBefore = GitOutput(repo, {"count-objects", "-v"});
+    const auto refsBefore = GitOutput(repo, {"show-ref"});
+    auto oid = GitOutput(repo, {"hash-object", "--no-filters", "--", sensitive});
+    oid.erase(oid.find_first_of("\r\n"));
+    REQUIRE(RunGit({"cat-file", "-e", oid}, repo).exitCode != 0);
+    const auto result = RunKog({"agent-queue", "checkpoint", "capture", "--id", "sensitive-dir",
+                               "--path", "ordinary.txt", "--path", sensitive,
+                               "--source", "pre-existing/unknown", "--work-item", "KOG-TSK-0142",
+                               "--owner-stable"}, repo);
+    REQUIRE(result.exitCode != 0);
+    RequireContains(result.stderrText, "excluded_checkpoint_path");
+    REQUIRE(GitOutput(repo, {"rev-parse", "HEAD"}) == headBefore);
+    REQUIRE(GitOutput(repo, {"ls-files", "--stage"}) == indexBefore);
+    REQUIRE(GitOutput(repo, {"show-ref"}) == refsBefore);
+    REQUIRE(GitOutput(repo, {"count-objects", "-v"}) == objectsBefore);
+    REQUIRE(RunGit({"cat-file", "-e", oid}, repo).exitCode != 0);
+    REQUIRE_FALSE(std::filesystem::exists(repo / ".git/kano-agent-queue/checkpoints/sensitive-dir/manifest.json"));
+    REQUIRE(ReadText(repo / sensitive) == std::string{"fixture\0opaque-value", 20});
     RemoveSandboxWorkspace(sandbox);
 }
 
