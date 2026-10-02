@@ -550,6 +550,13 @@ the dry-run plan.
 
 `kog sync origin-latest`, `kog sync dev`, and default `kog sync` now run a Git Credential Manager-focused auth preflight against the selected HTTP(S) remote before fetch/rebase work begins. Use `--no-auth-preflight` to skip that check when you explicitly need old behavior.
 
+The native origin-latest auto-stash flow restores with `git stash pop --index`
+so staged and unstaged changes retain their separate intent. A fetch failure
+after a successful auto-stash attempts that same restoration and still returns
+failure. If restoration conflicts, sync fails and retains the recovery stash;
+it does not resolve user changes or claim successful synchronization. Use
+`--no-auto-stash` when temporary stashing is not authorized.
+
 Do not treat raw `git submodule update` as the default repair path for these cases.
 
 `kog log` and `kog slog` now support behind/diverged remote preview controls:

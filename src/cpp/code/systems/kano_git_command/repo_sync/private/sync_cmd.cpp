@@ -3539,6 +3539,16 @@ auto RunNativeOriginLatestSync(
                 err << fetch.stderrStr;
                 const auto category = ClassifySyncFailure(fetch, "FAILED_CONNECTION");
                 err << "[" << name << "] " << category << ": fetch failed\n";
+                if (stashCreated) {
+                    const auto pop = GitCapture(plan.path, {"stash", "pop", "--index"});
+                    out << pop.stdoutStr;
+                    err << pop.stderrStr;
+                    if (pop.exitCode != 0) {
+                        err << "[" << name << "] FAILED_SYNC: auto-stash recovery failed after fetch failure; recovery stash retained\n";
+                        return finishFailed("FAILED_SYNC", "fetch failed and auto-stash recovery failed");
+                    }
+                    out << "Restored auto-stash for " << name << " after fetch failure\n";
+                }
                 return finishFailed(category, "fetch failed");
             }
         }
@@ -3564,7 +3574,7 @@ auto RunNativeOriginLatestSync(
                     err << "[" << name << "] FAILED_MISSING_REMOTE: target branch and matching tag not found\n";
                     err << "Target branch not found for " << name << "\n";
                     if (stashCreated && !InDryRun) {
-                        const auto pop = GitCapture(plan.path, {"stash", "pop"});
+                        const auto pop = GitCapture(plan.path, {"stash", "pop", "--index"});
                         out << pop.stdoutStr;
                         err << pop.stderrStr;
                     }
@@ -3601,7 +3611,7 @@ auto RunNativeOriginLatestSync(
                 out << "[DRY RUN] Skip pull: missing remote branch " << plan.remote << "/" << plan.targetBranch << "\n";
             }
             if (stashCreated) {
-                out << "[DRY RUN] Would run: git stash pop\n";
+                out << "[DRY RUN] Would run: git stash pop --index\n";
             }
             return finishSuccess("SYNCED_DRY_RUN", "dry-run planned sync");
         }
@@ -3613,7 +3623,7 @@ auto RunNativeOriginLatestSync(
             err << checkout.stderrStr;
             err << "[" << name << "] FAILED_SYNC: checkout failed\n";
             if (stashCreated) {
-                const auto pop = GitCapture(plan.path, {"stash", "pop"});
+                const auto pop = GitCapture(plan.path, {"stash", "pop", "--index"});
                 out << pop.stdoutStr;
                 err << pop.stderrStr;
             }
@@ -3668,7 +3678,7 @@ auto RunNativeOriginLatestSync(
                                 err << "WARN: failed to abort rebase after conflict for " << name << "\n";
                             }
                             if (stashCreated) {
-                                const auto pop = GitCapture(plan.path, {"stash", "pop"});
+                                const auto pop = GitCapture(plan.path, {"stash", "pop", "--index"});
                                 out << pop.stdoutStr;
                                 err << pop.stderrStr;
                             }
@@ -3678,7 +3688,7 @@ auto RunNativeOriginLatestSync(
                         const auto category = ClassifySyncFailure(rebase, "FAILED_SYNC");
                         err << "[" << name << "] " << category << ": rebase failed\n";
                         if (stashCreated) {
-                            const auto pop = GitCapture(plan.path, {"stash", "pop"});
+                            const auto pop = GitCapture(plan.path, {"stash", "pop", "--index"});
                             out << pop.stdoutStr;
                             err << pop.stderrStr;
                         }
@@ -3691,7 +3701,7 @@ auto RunNativeOriginLatestSync(
 
         if (stashCreated) {
             emitProgress("repo-step repo=" + name + " step=restore-stash");
-            const auto pop = GitCapture(plan.path, {"stash", "pop"});
+            const auto pop = GitCapture(plan.path, {"stash", "pop", "--index"});
             out << pop.stdoutStr;
             err << pop.stderrStr;
             if (pop.exitCode != 0) {
