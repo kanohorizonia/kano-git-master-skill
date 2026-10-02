@@ -263,13 +263,25 @@ auto WriteConsoleEvidence(const ScopedHandle& InOutput, const char* InBytes,
 } // namespace
 
 auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
+    // KOG-BUG-0107 round 5: also stream stage events to stderr so the
+    // test's transcript capture (host->outputRead pipe) records them even
+    // when the stage-file path cannot be created on this runner.
+    auto StderrStage = [](const wchar_t* InTag) {
+        std::fputws(L"[KOG_BUG_0107 wrapper stage] ", stderr);
+        std::fputws(InTag, stderr);
+        std::fputwc(L'\n', stderr);
+        std::fflush(stderr);
+    };
     WriteStage(L"stage01_wrapper_entered");
+    StderrStage(L"stage01_wrapper_entered");
     if (InArgumentCount < 2 || InArguments[1] == nullptr ||
         InArguments[1][0] == L'\0') {
         WriteStage(L"stage01_failed_missing_binary");
+        StderrStage(L"stage01_failed_missing_binary");
         return PrintFailure("missing-production-binary");
     }
     WriteStage(L"stage02_args_parsed");
+    StderrStage(L"stage02_args_parsed");
     // KOG-BUG-0107: in --test-skip-startup-harness mode the wrapper still
     // sets KOG_TEST_MODE=1 (other test infrastructure needs it) but does
     // not set the startup cancel-ack env vars; the production TUI then
@@ -297,8 +309,10 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
     ScopedHandle consoleInput;
     ScopedHandle consoleOutput;
     WriteStage(L"stage03_console_devices_in_use");
+    StderrStage(L"stage03_console_devices_in_use");
     if (!OpenConsoleDevices(consoleInput, consoleOutput, failureError)) {
         WriteStage(L"stage03_failed_open_console_devices");
+        StderrStage(L"stage03_failed_open_console_devices");
         return PrintWin32Failure("console-device-open-before-launch", failureError);
     }
     if (SetEnvironmentVariableW(L"KOG_TEST_MODE", L"1") == 0) {
@@ -321,9 +335,11 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
     if (!CaptureConsoleState(
             before, consoleInput, consoleOutput, captureFailure, failureError)) {
         WriteStage(L"stage04_failed_capture_console_state");
+        StderrStage(L"stage04_failed_capture_console_state");
         return PrintWin32Failure(captureFailure, failureError);
     }
     WriteStage(L"stage04_console_state_captured");
+    StderrStage(L"stage04_console_state_captured");
 
     std::wstring commandLine = QuoteArgument(InArguments[1]);
     // KOG-BUG-0107 round 5: log the exact command line + cwd + env so we
@@ -470,12 +486,14 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
             &startup.StartupInfo, &process)) {
         const DWORD err = GetLastError();
         WriteStage(L"stage05_failed_create_process");
+        StderrStage(L"stage05_failed_create_process");
         WriteStage((err == ERROR_INVALID_PARAMETER)
             ? L"stage05_create_process_error_87_invalid_parameter"
             : L"stage05_create_process_error_other");
         return PrintWin32Failure("production-launch-failed", err);
     }
     WriteStage(L"stage05_create_process_ok");
+    StderrStage(L"stage05_create_process_ok");
     CloseHandle(process.hThread);
 
     // This is an independent diagnostic deadline.  The outer controller is
@@ -483,10 +501,14 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
     constexpr DWORD kProductionExitTimeoutMs = 5'000;
     constexpr DWORD kProductionTerminateJoinTimeoutMs = 500;
     WriteStage(L"stage06_waiting_for_production_exit");
+    StderrStage(L"stage06_waiting_for_production_exit");
     const auto waitResult =
         WaitForSingleObject(process.hProcess, kProductionExitTimeoutMs);
     if (waitResult != WAIT_OBJECT_0) {
         WriteStage((waitResult == WAIT_TIMEOUT)
+            ? L"stage06_production_exit_timeout"
+            : L"stage06_production_wait_failed");
+        StderrStage((waitResult == WAIT_TIMEOUT)
             ? L"stage06_production_exit_timeout"
             : L"stage06_production_wait_failed");
         (void)TerminateProcess(process.hProcess, 253);
@@ -517,6 +539,9 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
     CloseHandle(process.hProcess);
     if (!gotExit || childExit != 0) {
         WriteStage((childExit == 259)
+            ? L"stage08_production_exit_code_259"
+            : L"stage08_production_exit_nonzero");
+        StderrStage((childExit == 259)
             ? L"stage08_production_exit_code_259"
             : L"stage08_production_exit_nonzero");
         return PrintFailure("production-exit-nonzero");
