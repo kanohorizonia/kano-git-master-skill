@@ -14,6 +14,7 @@ struct ExactPathCommitOptions {
     std::string message;
     std::string expectedHead;
     std::string queueBatch;
+    std::string overlapCheckpoint;
     bool dryRun = false;
 };
 

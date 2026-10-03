@@ -1,0 +1,108 @@
+{
+  "workItem": "KOG-TSK-0142",
+  "sourceImplementationCommit": "ad805584c57814e959c4d41b2914133b447d311e",
+  "scope": "Retained disposable synthetic fixture; no live A1/source/Blueprint changes",
+  "fixture": "D:\\_work\\_Horizon\\_worktrees\\kog-tsk-0142\\.kano\\tmp\\kog0142-independent-20260930\\overlap-proof",
+  "baseHead": "e858385f41dde295f4bdc9114cef2d39f4f3748c",
+  "checkpointId": "kog0142-independent-20260930",
+  "checkpointRef": "refs/kog/checkpoints/kog0142-independent-20260930",
+  "checkpointCommit": "5a267f0b98e71c45a909f2de90236492af6bea0c",
+  "ownCommit": "a17bafff6ad9f6a4513945f50141df6e0a5ca1ea",
+  "checkpointIsOwnCommitAncestor": false,
+  "checkpointReadback": {
+    "originalStagedExact": true,
+    "originalWorkingExact": true
+  },
+  "ownCommitReadback": {
+    "onlyOwnChange": true,
+    "originalBaseParent": true
+  },
+  "selectedIntent": {
+    "stagedRebasedExactly": true,
+    "workingExactly": true
+  },
+  "unrelated": [
+    {
+      "path": "unrelated-0.txt",
+      "stagedSha256": "640a03da1aa4d31e07e96847f56aa64673b27010e86e523f564cb2f997cbdd44",
+      "workingSha256": "cdb49e279a29087fc67cdbbf23b541a25418b78167cfca2bb0ac71a680bef8f7",
+      "mode": "100755",
+      "originalIndexBytesModeAndWorkingPreserved": true
+    },
+    {
+      "path": "unrelated-1.txt",
+      "stagedSha256": "316b2935c767a4f089e2f199f4b688fe22399ea81c464f65f862c6c520570910",
+      "workingSha256": "de363728fc20fbd29593d2d276a9bf4326ef2f7394af32da778c04c73dd242c3",
+      "mode": "100644",
+      "originalIndexBytesModeAndWorkingPreserved": true
+    },
+    {
+      "path": "unrelated-2.txt",
+      "stagedSha256": "5fdc5975b5b490ae9b510b4ad5ad41cad08bb76a9542f4c6d9874fad3e8619fa",
+      "workingSha256": "40540754dd84685c743bb117b7772e01244c121d9bb617572514838731aead34",
+      "mode": "100644",
+      "originalIndexBytesModeAndWorkingPreserved": true
+    },
+    {
+      "path": "unrelated-3.txt",
+      "stagedSha256": "6eb2ca37ceaa945f6c9b497c642ade4bb1f5b0357a78a0038d8b9b781d60a4d8",
+      "workingSha256": "6c7fe36b68fbe8059defd7a2b832951e14ae37a72f7ddcdb312dad1cc3a8568d",
+      "mode": "100644",
+      "originalIndexBytesModeAndWorkingPreserved": true
+    },
+    {
+      "path": "unrelated-4.txt",
+      "stagedSha256": "15d2333c13dac17e813624fc3127055cffe10833b058b1651cb597d3af22a54d",
+      "workingSha256": "8ae6439f2d9b7857ac9e2975d8262c9037cbdb6ae3bd15e827b7d2536320a7ef",
+      "mode": "100644",
+      "originalIndexBytesModeAndWorkingPreserved": true
+    },
+    {
+      "path": "unrelated-5.txt",
+      "stagedSha256": "6e608e40f27361fa9ef95f773e635e9c396381fdc3fa8a3dcdb9a39f166c3ad9",
+      "workingSha256": "342c6971eef328f1f8535682eb1133a8779d8f3cb2c7a835053cc3b9d5aacb7a",
+      "mode": "100644",
+      "originalIndexBytesModeAndWorkingPreserved": true
+    },
+    {
+      "path": "unrelated-6.txt",
+      "stagedSha256": "c413d079f2c0873a5fff236b608b870c3515d119b7ab11a576ae63adf66639a4",
+      "workingSha256": "7f384a6b0e6a2f769c0e1cca14a79e607312d20e607c196328065d4e0ca1f0d9",
+      "mode": "100644",
+      "originalIndexBytesModeAndWorkingPreserved": true
+    },
+    {
+      "path": "unrelated-7.txt",
+      "stagedSha256": "8f48a5d984fcc28940e12b732e9a501781894147de69f089eab2227b5de7456c",
+      "workingSha256": "6079cd34785b3700e9d448260479e87ef4bdac4a08beb2d44fe659a5f4f02800",
+      "mode": "100644",
+      "originalIndexBytesModeAndWorkingPreserved": true
+    },
+    {
+      "path": "unrelated-8.txt",
+      "stagedSha256": "b21435a0edc45173cee21a21fde59471a8de195ddb09d8412cd2f9adddba167f",
+      "workingSha256": "ef121f15e3ed753cee0f6eb4cd12d56679a079dcfd8a078a66457f7908794bd0",
+      "mode": "100644",
+      "originalIndexBytesModeAndWorkingPreserved": true
+    },
+    {
+      "path": "unrelated-9.txt",
+      "stagedSha256": "07d8f7e1febd3e18f4c638317a816cc58fe248885d89da5e670d2cc992e66d4c",
+      "workingSha256": "cbd337c2cc0942ca010051f62e15935ccd74403ab79c69f42fd3a70f8c9c92cc",
+      "mode": "100644",
+      "originalIndexBytesModeAndWorkingPreserved": true
+    }
+  ],
+  "states": {
+    "saved": true,
+    "independentlyTested": true,
+    "integrated": false,
+    "published": false,
+    "consumedByInstalledRuntime": false
+  },
+  "limitations": [
+    "owner-stable is asserted for the synthetic fixture",
+    "installed KOG 0.0.1.1024 lacks checkpoint command",
+    "checkpoint refs remain local; caller-only commit is a fixture commit"
+  ]
+}
