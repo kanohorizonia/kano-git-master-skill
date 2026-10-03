@@ -14,6 +14,10 @@
 
 set -euo pipefail
 
+KANO_CPP_INFRA_CPP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../cpp" && pwd)"
+. "$KANO_CPP_INFRA_CPP_ROOT/shared/infra/scripts/lib/native_tool.sh"
+kano_cpp_infra_watchdog_enter "$0" "$@"
+
 archive_path="${1:-}"
 
 fail() {

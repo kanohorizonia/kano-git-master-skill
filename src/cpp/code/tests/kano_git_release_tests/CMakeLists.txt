@@ -3,7 +3,7 @@ add_executable(kano_git_release_tests
 )
 
 target_link_libraries(kano_git_release_tests
-  PRIVATE Catch2::Catch2WithMain
+  PRIVATE kano_git_test_main
   PRIVATE kano::git_cmd_product
 )
 
@@ -18,4 +18,5 @@ target_compile_definitions(kano_git_release_tests
 
 add_dependencies(kano_git_release_tests kano_git_cli)
 
-catch_discover_tests(kano_git_release_tests)
+catch_discover_tests(kano_git_release_tests PROPERTIES ${KOG_TEST_PROPERTIES})
+kano_infra_finalize_local_test_timeouts(300)

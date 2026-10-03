@@ -32,7 +32,7 @@ add_executable(kano_git_cli_tests
 )
 
 target_link_libraries(kano_git_cli_tests
-  PRIVATE Catch2::Catch2WithMain
+  PRIVATE kano_git_test_main
   PRIVATE kano_git_test_core
   PRIVATE kano_git_core
   PRIVATE kano_git_command_runtime
@@ -48,4 +48,5 @@ target_compile_definitions(kano_git_cli_tests
   PRIVATE KANO_GIT_TEST_REPO_ROOT="${KOG_REPO_ROOT}"
 )
 
-catch_discover_tests(kano_git_cli_tests)
+catch_discover_tests(kano_git_cli_tests PROPERTIES ${KOG_TEST_PROPERTIES})
+kano_infra_finalize_local_test_timeouts(300)

@@ -10,6 +10,11 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $CppRoot = Resolve-Path (Join-Path $ScriptDir "../..")
+. (Join-Path $CppRoot "shared/infra/scripts/lib/native_tool.ps1")
+$WatchdogArguments = @("-Preset", $Preset)
+if ($WithE2E) { $WatchdogArguments += "-WithE2E" }
+if ($WithIntegration) { $WatchdogArguments += "-WithIntegration" }
+Invoke-KanoCppInfraWatchdog -CppRoot $CppRoot -ScriptPath $PSCommandPath -Arguments $WatchdogArguments
 $TestXmlOutput = $env:KANO_TEST_XML
 $TestXmlDir = ""
 
@@ -89,6 +94,9 @@ if ([string]::IsNullOrWhiteSpace($WorkspaceRoot)) {
 
 Write-Host "Building via kog self build..."
 & (Join-Path $WorkspaceRoot "scripts\kog.bat") self build
+if ($LASTEXITCODE -ne 0) {
+    throw "Test build failed with exit code $LASTEXITCODE"
+}
 
 $BinDir = Resolve-BinDir -CppDir $CppRoot -PresetName $Preset
 $ExeDir = Join-Path $BinDir "release"

@@ -1,4 +1,5 @@
 #include <CLI/CLI.hpp>
+#include <kano_unattended.hpp>
 
 #include "command_registry.hpp"
 #include "tui_dashboard_runner.hpp"
@@ -9,6 +10,7 @@
 #include <string>
 
 int main(int InArgc, char* InArgv[]) {
+    kano::infra::ConfigureUnattendedExecutionIfRequested();
     CLI::App app{"Kano Git standalone TUI dashboard", "kano-git-tui"};
     bool demo = false;
     std::string theme = "auto";

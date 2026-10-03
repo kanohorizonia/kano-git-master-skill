@@ -29,7 +29,7 @@ add_executable(kano_git_tui_tests
 )
 
 target_link_libraries(kano_git_tui_tests
-  PRIVATE Catch2::Catch2WithMain
+  PRIVATE kano_git_test_main
   PRIVATE kano_git_test_core
   PRIVATE kano_git_command
 )
@@ -51,10 +51,12 @@ if(WIN32)
     integration/windows_tui_terminal_state_wrapper.cpp
   )
   target_compile_features(kano_git_tui_terminal_state_wrapper PRIVATE cxx_std_23)
+  target_link_libraries(kano_git_tui_terminal_state_wrapper PRIVATE KanoInfra::unattended)
   add_executable(kano_git_tui_conpty_host
     integration/windows_tui_conpty_host.cpp
   )
   target_compile_features(kano_git_tui_conpty_host PRIVATE cxx_std_23)
+  target_link_libraries(kano_git_tui_conpty_host PRIVATE KanoInfra::unattended)
   add_dependencies(kano_git_tui_tests
     kano_git_tui_terminal_state_wrapper
     kano_git_tui_conpty_host
@@ -66,4 +68,5 @@ target_include_directories(kano_git_tui_tests
     ${KANO_GIT_COMMAND_ROOT}/ui/private
 )
 
-catch_discover_tests(kano_git_tui_tests)
+catch_discover_tests(kano_git_tui_tests PROPERTIES ${KOG_TEST_PROPERTIES})
+kano_infra_finalize_local_test_timeouts(300)

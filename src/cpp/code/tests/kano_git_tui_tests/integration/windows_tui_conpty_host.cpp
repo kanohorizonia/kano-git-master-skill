@@ -5,6 +5,7 @@
 // controller without compromising the test runner itself.
 
 #include <windows.h>
+#include <kano_unattended.hpp>
 #include <consoleapi3.h>
 
 #include <array>
@@ -197,6 +198,7 @@ auto RemainingDeadlineMilliseconds(
 } // namespace
 
 auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
+    kano::infra::ConfigureUnattendedExecution();
     DWORD code = kExitUsage;
     DWORD win32 = ERROR_SUCCESS;
     DWORD childExit = STILL_ACTIVE;

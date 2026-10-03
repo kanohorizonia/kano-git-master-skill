@@ -5,6 +5,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$CppRoot = (Resolve-Path (Join-Path $PSScriptRoot "../../../..")).Path
+. (Join-Path $CppRoot "shared/infra/scripts/lib/native_tool.ps1")
+$WatchdogArguments = @("-WorkspaceRoot", $WorkspaceRoot, "-KogPath", $KogPath)
+if ($VerboseLog) { $WatchdogArguments += "-VerboseLog" }
+Invoke-KanoCppInfraWatchdog -CppRoot $CppRoot -ScriptPath $PSCommandPath -Arguments $WatchdogArguments
 
 function Resolve-WorkspaceRoot {
     param([string]$InputRoot)

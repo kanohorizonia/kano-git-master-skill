@@ -4,6 +4,8 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/../../.." && pwd)"
 repo_script="src/shell/test/ci-linux-audit-runtime.sh"
+. "$repo_root/src/cpp/shared/infra/scripts/lib/native_tool.sh"
+kano_cpp_infra_watchdog_enter "$0" "$@"
 
 # shellcheck disable=SC1091
 source "$repo_root/src/cpp/shared/infra/scripts/lib/linux_ci_runner.sh"

@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <kano_unattended.hpp>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -26,6 +27,7 @@ auto ParseExitCode(const std::string& InValue) -> int {
 } // namespace
 
 auto main(int argc, char** argv) -> int {
+    kano::infra::ConfigureUnattendedExecution();
     std::string joined;
     for (int index = 1; index < argc; ++index) {
         if (!joined.empty()) {

@@ -8,6 +8,9 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+KANO_CPP_INFRA_CPP_ROOT="$(cd "$script_dir/../../cpp" && pwd)"
+. "$KANO_CPP_INFRA_CPP_ROOT/shared/infra/scripts/lib/native_tool.sh"
+kano_cpp_infra_watchdog_enter "$0" "$@"
 archive_path="${1:-}"
 if [[ -z "$archive_path" ]]; then
   echo "Usage: $0 <archive.tar>" >&2

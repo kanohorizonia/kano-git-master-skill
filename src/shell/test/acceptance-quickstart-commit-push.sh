@@ -12,6 +12,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+. "$ROOT_DIR/src/cpp/shared/infra/scripts/lib/native_tool.sh"
+kano_cpp_infra_watchdog_enter "$0" "$@"
 TIMESTAMP_UTC="$(date -u +%Y%m%dT%H%M%SZ)"
 TMP_ROOT="${KOG_ACCEPTANCE_TMP_ROOT:-${ROOT_DIR}/.kano/tmp/git/acceptance}"
 CASE_ROOT="${TMP_ROOT}/kog-quickstart-acceptance-${TIMESTAMP_UTC}-$$"

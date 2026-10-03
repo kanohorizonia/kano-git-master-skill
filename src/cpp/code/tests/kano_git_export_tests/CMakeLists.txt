@@ -57,7 +57,7 @@ add_executable(kano_git_export_tests
 )
 
 target_link_libraries(kano_git_export_tests
-  PRIVATE Catch2::Catch2WithMain
+  PRIVATE kano_git_test_main
   PRIVATE kano_git_test_core
   PRIVATE kano::git_cmd_product
   PRIVATE rapidcheck
@@ -74,4 +74,5 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   target_compile_options(kano_git_export_tests PRIVATE -Wno-deprecated-declarations)
 endif()
 
-catch_discover_tests(kano_git_export_tests)
+catch_discover_tests(kano_git_export_tests PROPERTIES ${KOG_TEST_PROPERTIES})
+kano_infra_finalize_local_test_timeouts(300)
