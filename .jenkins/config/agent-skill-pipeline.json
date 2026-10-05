@@ -1,13 +1,6 @@
 {
   "projectName": "kano-git-master-skill",
   "skillName": "kano-git-master-skill",
-  "bootstrapAgentLabel": "lightweight",
-  "windowsAgentLabel": "windows && lightweight",
-  "linuxAgentLabel": "mac && docker && lightweight",
-  "macAgentLabel": "mac && lightweight",
-  "windowsArm64AgentLabel": "",
-  "linuxArm64AgentLabel": "",
-  "macosArm64AgentLabel": "",
   "bUseReleasePlatformMatrix": true,
   "bUseGithubActionsCloudBuild": false,
   "bGithubActionsCloudBuildDryRun": true,
@@ -15,8 +8,6 @@
   "githubActionsRepo": "kanohorizonia/kano-git-master-skill",
   "githubActionsWorkflow": "kano-cloud-build.yml",
   "githubActionsRef": "main",
-  "githubActionsCredentialId": "github-kanohorizonia-jenkins",
-  "githubActionsCredentialBinding": "usernamePassword",
   "githubActionsPollIntervalSeconds": 30,
   "githubActionsTimeoutMinutes": 90,
   "githubActionsArtifactRetentionDays": 1,
@@ -41,11 +32,6 @@
   "bCloudBuildLinuxArm64": true,
   "bCloudBuildMacosX64": true,
   "bCloudBuildMacosArm64": true,
-  "platformSharedWorkspaceRoots": {
-    "windows": "C:/Mount/s/jenkins_ws/KanoAgentSkills",
-    "linux": "/Users/Shared/KanoHorizonia/Jenkins/workspaces/KanoAgentSkills",
-    "mac": "/Users/Shared/KanoHorizonia/Jenkins/workspaces/KanoAgentSkills"
-  },
   "bRunReleasePhase": false,
   "bDefaultPublishGitHubPages": true,
   "bDefaultPublishWinget": true,
@@ -53,21 +39,55 @@
   "bDefaultPublishHomebrew": false,
   "bRunTests": true,
   "bRunCoverage": true,
-  "buildTasks": ["build"],
-  "pgiBuildTasks": ["pgi-build"],
-  "profileGatherTasks": ["profile-gather"],
-  "pgoBuildTasks": ["pgo-build"],
-  "testTasks": ["quick-test", "integration-test"],
-  "pgoTestTasks": ["pgo-test"],
-  "reportTasks": ["gather-reports"],
-  "linuxBuildTasks": ["ci-linux-build"],
-  "linuxPgiBuildTasks": ["ci-linux-pgi-build"],
-  "linuxProfileGatherTasks": ["ci-linux-profile-gather"],
-  "linuxPgoBuildTasks": ["ci-linux-pgo-build"],
-  "linuxTestTasks": ["ci-linux-quick-test", "ci-linux-integration-test", "audit-schema-test", "ci-linux-audit-runtime-test"],
-  "linuxPgoTestTasks": ["ci-linux-pgo-test"],
-  "linuxCoverageTasks": ["ci-linux-coverage-all"],
-  "linuxReportTasks": ["gather-reports"],
+  "buildTasks": [
+    "build"
+  ],
+  "pgiBuildTasks": [
+    "pgi-build"
+  ],
+  "profileGatherTasks": [
+    "profile-gather"
+  ],
+  "pgoBuildTasks": [
+    "pgo-build"
+  ],
+  "testTasks": [
+    "quick-test",
+    "integration-test"
+  ],
+  "pgoTestTasks": [
+    "pgo-test"
+  ],
+  "reportTasks": [
+    "gather-reports"
+  ],
+  "linuxBuildTasks": [
+    "ci-linux-build"
+  ],
+  "linuxPgiBuildTasks": [
+    "ci-linux-pgi-build"
+  ],
+  "linuxProfileGatherTasks": [
+    "ci-linux-profile-gather"
+  ],
+  "linuxPgoBuildTasks": [
+    "ci-linux-pgo-build"
+  ],
+  "linuxTestTasks": [
+    "ci-linux-quick-test",
+    "ci-linux-integration-test",
+    "audit-schema-test",
+    "ci-linux-audit-runtime-test"
+  ],
+  "linuxPgoTestTasks": [
+    "ci-linux-pgo-test"
+  ],
+  "linuxCoverageTasks": [
+    "ci-linux-coverage-all"
+  ],
+  "linuxReportTasks": [
+    "gather-reports"
+  ],
   "linuxValidateCommand": "pixi run ci-linux-validate",
   "requiredPixiTasks": [
     "build",
@@ -106,8 +126,7 @@
       "name": "kano-cpp-test-skill",
       "url": "https://github.com/kanohorizonia/kano-cpp-test-skill.git",
       "branch": "main",
-      "path": "_tools/kano-cpp-test-skill",
-      "credentialsId": "github-kanohorizonia-jenkins"
+      "path": "_tools/kano-cpp-test-skill"
     }
   ],
   "bUseGlobReportDiscovery": true,
@@ -115,7 +134,6 @@
   "releaseJobName": "Release_Publish",
   "upstreamBuildJob": "KanoAgentSkills/kano-git-master-skill/Build_CI",
   "gitUrl": "https://github.com/kanohorizonia/kano-git-master-skill.git",
-  "gitCredentialsId": "github-kanohorizonia-jenkins",
   "gitBranch": "__DEFAULT_BRANCH__",
   "bRunWindowsBuild": true,
   "bRunLinuxBuild": true,
@@ -151,19 +169,15 @@
   "bPublishWingetRecipe": true,
   "wingetPublishCommand": "bash -lc './scripts/kog release winget prepare-pr --repo . --dry-run'",
   "wingetManifestRepoUrl": "",
-  "wingetManifestRepoCredentialId": "",
   "wingetManifestRepoBranch": "main",
   "bPublishHomebrewFormula": true,
   "homebrewPublishCommand": "bash src/shell/release/05-publish-homebrew-internal.sh",
   "homebrewTapRepoUrl": "",
-  "homebrewTapCredentialId": "",
   "homebrewTapRepoBranch": "main",
   "bPublishAptRecipe": true,
   "aptPublishCommand": "bash -lc 'echo apt publish dry-run lane; test -n \"${KANO_APT_REPO_URL:-}\" || true'",
   "aptRepoUrl": "",
-  "aptRepoCredentialId": "",
   "aptRepoBranch": "main",
-  "releaseAssetBaseUrl": "",
   "bReleaseGithubDryRun": true,
   "bReleaseGithubPrepare": false,
   "bReleaseGithubPublish": false,
@@ -173,15 +187,10 @@
   "releaseWindowsPackageCommand": "bash -lc './scripts/kog release package windows --repo . --dry-run'",
   "githubReleasePrepareCommand": "bash src/shell/release/07-prepare-github-release-from-artifacts.sh . artifacts",
   "githubRepository": "kanohorizonia/kano-git-master-skill",
-  "githubTokenCredentialId": "github-kanohorizonia-jenkins",
-  "githubTokenCredentialBinding": "usernamePassword",
   "siteBuildCommand": "bash -lc 'export PATH=\"$HOME/.pixi/bin:$PIXI_HOME/bin:$PATH\"; pixi run docs'",
   "sitePublishCommand": "bash src/shell/docs/06-publish-github-pages.sh",
-  "siteProvider": "github-pages",
-  "siteEnvironment": "production",
   "githubPagesRepoUrl": "https://github.com/kanohorizonia/kano-git-master-skill.git",
   "githubPagesBranch": "gh-pages",
-  "githubPagesCredentialId": "github-kanohorizonia-jenkins",
   "bBuildSite": true,
   "bPublishSite": false,
   "bCreateGitHubRelease": true,
@@ -201,5 +210,7 @@
     "quickFilterEnabled": true,
     "listSize": "20",
     "allowedRegex": "^(main|develop|feature/.+|users/.+|personal/.+|release/.+)$"
-  }
+  },
+  "operatorProfileProject": "kano-git-master-skill",
+  "operatorProfileRequired": true
 }
