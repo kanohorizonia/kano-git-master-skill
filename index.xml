@@ -10,61 +10,61 @@
     <link>https://kanohorizonia.github.io/kano-git-master-skill/api/overview</link>
     <guid>https://kanohorizonia.github.io/kano-git-master-skill/api/overview</guid>
     <description>API Overview This site publishes generated C++ API documentation under /api-docs/. Open generated API docs The generated API pages are produced from the public C++ facade headers with Doxygen.</description>
-    <pubDate>Sat, 03 Oct 2026 01:04:42 GMT</pubDate>
+    <pubDate>Mon, 05 Oct 2026 08:11:51 GMT</pubDate>
   </item><item>
     <title>index</title>
     <link>https://kanohorizonia.github.io/kano-git-master-skill/</link>
     <guid>https://kanohorizonia.github.io/kano-git-master-skill/</guid>
     <description>Git Master Skill Documentation Version: 0.0.1 Status: Alpha Release Current command contract updated: 2026-06-22 This documentation set contains both current native-CLI docs ...</description>
-    <pubDate>Sat, 03 Oct 2026 01:04:42 GMT</pubDate>
+    <pubDate>Mon, 05 Oct 2026 08:11:51 GMT</pubDate>
+  </item><item>
+    <title>quick-start</title>
+    <link>https://kanohorizonia.github.io/kano-git-master-skill/guides/quick-start</link>
+    <guid>https://kanohorizonia.github.io/kano-git-master-skill/guides/quick-start</guid>
+    <description>Git Master Skill Quick Start This guide uses the current native kog command surface. Historical root shell scripts such as update-repo.sh, discover-repos.sh, and status-all-repos.sh are no longer the supported entrypoints.</description>
+    <pubDate>Mon, 05 Oct 2026 08:11:51 GMT</pubDate>
+  </item><item>
+    <title>repo-initialization-workflow</title>
+    <link>https://kanohorizonia.github.io/kano-git-master-skill/guides/repo-initialization-workflow</link>
+    <guid>https://kanohorizonia.github.io/kano-git-master-skill/guides/repo-initialization-workflow</guid>
+    <description>Repository Initialization Workflow Guide Overview The repository initialization workflow provides a comprehensive, automated approach to setting up Git repositories with ...</description>
+    <pubDate>Mon, 05 Oct 2026 08:11:51 GMT</pubDate>
+  </item><item>
+    <title>runtime-path-layout</title>
+    <link>https://kanohorizonia.github.io/kano-git-master-skill/guides/runtime-path-layout</link>
+    <guid>https://kanohorizonia.github.io/kano-git-master-skill/guides/runtime-path-layout</guid>
+    <description>Runtime Path Layout KOG resolves stable workspace and skill-asset paths through one native runtime layout. Command implementations choose filenames and explicit command-line overrides; they do not reconstruct .kano, plan, cache, or ignore-asset paths.</description>
+    <pubDate>Mon, 05 Oct 2026 08:11:51 GMT</pubDate>
+  </item><item>
+    <title>scalar</title>
+    <link>https://kanohorizonia.github.io/kano-git-master-skill/guides/scalar</link>
+    <guid>https://kanohorizonia.github.io/kano-git-master-skill/guides/scalar</guid>
+    <description>Git Scalar - Mono-repo Optimization Guide Feature: Git Scalar integration for large repositories Phase: 5 Status: Complete Overview Git Scalar is a tool for managing large Git repositories ...</description>
+    <pubDate>Mon, 05 Oct 2026 08:11:51 GMT</pubDate>
+  </item><item>
+    <title>submodule</title>
+    <link>https://kanohorizonia.github.io/kano-git-master-skill/guides/submodule</link>
+    <guid>https://kanohorizonia.github.io/kano-git-master-skill/guides/submodule</guid>
+    <description>Submodule Management Guide Feature: Enhanced Git submodule operations Phase: 4 Status: Complete Overview Enhanced submodule management with batch operations, recursive updates, ...</description>
+    <pubDate>Mon, 05 Oct 2026 08:11:51 GMT</pubDate>
   </item><item>
     <title>subtree</title>
     <link>https://kanohorizonia.github.io/kano-git-master-skill/guides/subtree</link>
     <guid>https://kanohorizonia.github.io/kano-git-master-skill/guides/subtree</guid>
     <description>Phase 3: Subtree Management - Complete Overview Successfully implemented comprehensive subtree management functionality for kano-git-master-skill. This phase adds 6 new scripts and a shared helper library for managing Git subtrees, enabling inclusion of external code without the complexity of submodules.</description>
-    <pubDate>Sat, 03 Oct 2026 01:04:42 GMT</pubDate>
+    <pubDate>Mon, 05 Oct 2026 08:11:51 GMT</pubDate>
   </item><item>
     <title>version-info</title>
     <link>https://kanohorizonia.github.io/kano-git-master-skill/guides/version-info</link>
     <guid>https://kanohorizonia.github.io/kano-git-master-skill/guides/version-info</guid>
     <description>Version Information Extraction Guide Overview The Git Master Skill provides unified version information extraction for: Standard Git repositories git-p4 repositories (Git ...</description>
-    <pubDate>Sat, 03 Oct 2026 01:04:42 GMT</pubDate>
+    <pubDate>Mon, 05 Oct 2026 08:11:51 GMT</pubDate>
   </item><item>
     <title>worktree</title>
     <link>https://kanohorizonia.github.io/kano-git-master-skill/guides/worktree</link>
     <guid>https://kanohorizonia.github.io/kano-git-master-skill/guides/worktree</guid>
     <description>Phase 2: Worktree Implementation - Complete Overview Successfully implemented comprehensive worktree management functionality for kano-git-master-skill ...</description>
-    <pubDate>Sat, 03 Oct 2026 01:04:42 GMT</pubDate>
-  </item><item>
-    <title>perforce-to-git</title>
-    <link>https://kanohorizonia.github.io/kano-git-master-skill/migrations/perforce-to-git</link>
-    <guid>https://kanohorizonia.github.io/kano-git-master-skill/migrations/perforce-to-git</guid>
-    <description>Perforce to Git Migration Guide Last Updated: 2026-02-12 Overview This guide covers migrating from Perforce to Git, including gradual migration strategies, hybrid workflows, ...</description>
-    <pubDate>Sat, 03 Oct 2026 01:04:42 GMT</pubDate>
-  </item><item>
-    <title>svn-to-git</title>
-    <link>https://kanohorizonia.github.io/kano-git-master-skill/migrations/svn-to-git</link>
-    <guid>https://kanohorizonia.github.io/kano-git-master-skill/migrations/svn-to-git</guid>
-    <description>Subversion to Git Migration Guide Last Updated: 2026-02-12 Overview This guide covers migrating from Subversion (SVN) to Git, including gradual migration strategies, hybrid ...</description>
-    <pubDate>Sat, 03 Oct 2026 01:04:42 GMT</pubDate>
-  </item><item>
-    <title>cli-architecture-proposal</title>
-    <link>https://kanohorizonia.github.io/kano-git-master-skill/planning/cli-architecture-proposal</link>
-    <guid>https://kanohorizonia.github.io/kano-git-master-skill/planning/cli-architecture-proposal</guid>
-    <description>Kano Git Master Skill - CLI Architecture Proposal Date: 2026-02-13 Status: Planning Phase Purpose: Convert shell script collection into unified CLI tool Current State Project ...</description>
-    <pubDate>Sat, 03 Oct 2026 01:04:42 GMT</pubDate>
-  </item><item>
-    <title>tui-branch-transplant-workflows</title>
-    <link>https://kanohorizonia.github.io/kano-git-master-skill/planning/tui-branch-transplant-workflows</link>
-    <guid>https://kanohorizonia.github.io/kano-git-master-skill/planning/tui-branch-transplant-workflows</guid>
-    <description>TUI Branch Transplant Workflows Date: 2026-03-13 Status: Planning Scope: kog tui branch-to-branch transplant UX for cherry-pick and rebase assist Overview This document defines ...</description>
-    <pubDate>Sat, 03 Oct 2026 01:04:42 GMT</pubDate>
-  </item><item>
-    <title>README</title>
-    <link>https://kanohorizonia.github.io/kano-git-master-skill/profiling/README</link>
-    <guid>https://kanohorizonia.github.io/kano-git-master-skill/profiling/README</guid>
-    <description>Profiling Area This directory contains curated build-feature profiling matrices that measure the effect of individual build options on compile and link times ...</description>
-    <pubDate>Sat, 03 Oct 2026 01:04:42 GMT</pubDate>
+    <pubDate>Mon, 05 Oct 2026 08:11:51 GMT</pubDate>
   </item>
     </channel>
   </rss>
