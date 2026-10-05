@@ -1491,6 +1491,13 @@ TEST_CASE(
         .lexically_normal().generic_string();
     const ScopedWindowsEnvironment stageLogEnv(
         "KOG_TUI_TEST_STAGE_LOG", stageLogPath.c_str());
+    // KOG-BUG-0146: also enable the production-TUI SEH stage-trace diag so
+    // the test can localise the exit-259 production-side crash before the
+    // unattended-execution filter terminates the process.  The path is the
+    // same file as the wrapper stage log; both processes append in pid
+    // order and the test reads the combined content via the stage log.
+    const ScopedWindowsEnvironment diagLogEnv(
+        "KOG_TUI_TEST_DIAG_LOG", stageLogPath.c_str());
 
     // Real workspace so the production TUI has something to discover.
     const auto workspace = (sandbox.Root() / "ws").lexically_normal();
@@ -1577,6 +1584,10 @@ TEST_CASE(
         .lexically_normal().generic_string();
     const ScopedWindowsEnvironment stageLogEnv(
         "KOG_TUI_TEST_STAGE_LOG", stageLogPath.c_str());
+    // KOG-BUG-0146: also enable the production-TUI SEH stage-trace diag
+    // (see the q test case for the full rationale).
+    const ScopedWindowsEnvironment diagLogEnv(
+        "KOG_TUI_TEST_DIAG_LOG", stageLogPath.c_str());
     const auto workspace = (sandbox.Root() / "ws").lexically_normal();
     InitializeWindowsFixtureRepository(workspace);
 
