@@ -29,24 +29,15 @@
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/terminal.hpp>
 
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
-
 namespace {
 
-#ifdef _WIN32
-// KOG-BUG-0146: bounded test-only stage-trace file writer.  Mirrors the
-// production main.cpp helper so the same diag log captures the production
-// TUI's checkpoint progression through RunFtxuiDashboard.  Production
-// operators never set KOG_TUI_TEST_DIAG_LOG; the path check is the
-// opt-in gate.
+// KOG-BUG-0146: bounded test-only stage-trace file writer.  Uses only
+// standard C stdio so this translation unit does not have to pull in
+// <windows.h> (which would conflict with the rest of the file's
+// cross-platform includes).  Opt-in: the helper is a no-op unless
+// KOG_TEST_MODE=1 AND KOG_TUI_TEST_DIAG_LOG point at a writable file
+// path.  Normal operator runs never read the env vars, so production
+// semantics are unchanged.
 void WriteKogBug0146Diag(const char* InMessage) {
     if (InMessage == nullptr) {
         return;
@@ -59,27 +50,13 @@ void WriteKogBug0146Diag(const char* InMessage) {
     if (path == nullptr || *path == '\0') {
         return;
     }
-    HANDLE file = CreateFileA(
-        path, FILE_APPEND_DATA,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) {
+    std::FILE* file = std::fopen(path, "a");
+    if (file == nullptr) {
         return;
     }
-    char buf[512];
-    const int n = std::snprintf(
-        buf, sizeof(buf), "%s\tpid=%lu\ttid=%lu\n", InMessage,
-        static_cast<unsigned long>(GetCurrentProcessId()),
-        static_cast<unsigned long>(GetCurrentThreadId()));
-    if (n > 0) {
-        DWORD written = 0;
-        (void)WriteFile(file, buf, static_cast<DWORD>(n), &written, nullptr);
-    }
-    CloseHandle(file);
+    std::fprintf(file, "%s\n", InMessage);
+    std::fclose(file);
 }
-#else
-void WriteKogBug0146Diag(const char*) {}
-#endif
 
 }  // namespace
 
