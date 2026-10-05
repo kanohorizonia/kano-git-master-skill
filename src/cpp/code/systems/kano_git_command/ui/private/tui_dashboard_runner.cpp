@@ -52,7 +52,7 @@ void WriteKogBug0146Diag(const char* InMessage) {
         return;
     }
     const char* testMode = std::getenv("KOG_TEST_MODE");
-    if (testMode == nullptr || std::string(testMode) != "1") {
+    if (testMode == nullptr || testMode[0] != '1' || testMode[1] != '\0') {
         return;
     }
     const char* path = std::getenv("KOG_TUI_TEST_DIAG_LOG");
