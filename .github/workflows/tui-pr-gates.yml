@@ -34,6 +34,11 @@ on:
         required: false
         default: ""
         type: string
+      checkpoint_regressions:
+        description: Also run the bounded KOG-TSK-0142 CLI checkpoint inventory.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -82,6 +87,7 @@ jobs:
       GIT_TERMINAL_PROMPT: "0"
       KOG_PR_GATE_PLATFORM: ${{ matrix.platform }}
       KOG_PR_GATE_OUTPUT: ci/tui-pr-gate/${{ matrix.platform }}
+      KOG_CHECKPOINT_GATE_OUTPUT: ci/checkpoint-pr-gate/${{ matrix.platform }}
     steps:
       - name: Checkout requested source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -95,6 +101,20 @@ jobs:
         run: |
           set -euo pipefail
           git rev-parse HEAD > .tui-pr-gate-source-revision
+
+      - name: Initialize bounded checkpoint evidence
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.checkpoint_regressions }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$KOG_CHECKPOINT_GATE_OUTPUT"
+          echo "result=not_run" > "$KOG_CHECKPOINT_GATE_OUTPUT/status.txt"
+          {
+            echo "platform=$KOG_PR_GATE_PLATFORM"
+            echo "source_revision=$(tr -d '\r\n' < .tui-pr-gate-source-revision)"
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "selector=[KOG-TSK-0142]"
+            echo "artifact_policy=junit-only-no-command-output-no-environment-export"
+          } > "$KOG_CHECKPOINT_GATE_OUTPUT/manifest.txt"
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -184,6 +204,67 @@ jobs:
             "${catalog_args[@]}" \
             --timeout-seconds 1200
 
+      - name: Run exact cooperative checkpoint CLI inventory
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.checkpoint_regressions }}
+        env:
+          KOG_CHECKPOINT_APPLICATION_DIR: ${{ matrix.application_dir }}
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          sys.path.insert(0, str(Path("src/cpp/code/tests").resolve()))
+          from run_tui_pr_focus import run_focus_suite, write_status
+
+          required = {
+              "cooperative checkpoint preserves staged and working versions before an own-only commit",
+              "cooperative checkpoint separates path-normalized LF and CRLF edits without changing raw WIP",
+              "cooperative checkpoint captured blobs survive prune before own-only commit",
+              "cooperative checkpoint uses index attributes when the working attributes file is deleted",
+              "cooperative checkpoint preserves working ancestor attributes over indexed fallback",
+              "cooperative checkpoint detects reference-hook writer drift before reporting saved",
+              "cooperative checkpoint refuses secret clean-filter output without archiving it",
+              "cooperative checkpoint pins base staged and raw working snapshots across destructive prune",
+              "cooperative checkpoint excludes root and nested sensitive directories before writing objects",
+              "cooperative checkpoint blocks binary split and same-hunk mixed ownership",
+              "cooperative checkpoint rejects secret lock and changed base without losing WIP",
+              "cooperative checkpoint keeps a diverged remote and a rejecting hook outside own history",
+          }
+          output = Path(os.environ["KOG_CHECKPOINT_GATE_OUTPUT"])
+          junit = output / "checkpoint-pr-focus.junit.xml"
+          status = output / "status.txt"
+          suffix = ".exe" if sys.platform == "win32" else ""
+          binary = Path(os.environ["KOG_CHECKPOINT_APPLICATION_DIR"]) / f"kano_git_cli_tests{suffix}"
+          try:
+              run_focus_suite(
+                  label="cooperative-checkpoint", binary=binary.resolve(),
+                  selector="[KOG-TSK-0142]", junit_path=junit,
+                  timeout_seconds=1200, required_cases=required,
+              )
+              root = ET.parse(junit).getroot()
+              cases = root.findall(".//testcase")
+              if len(cases) != len(required) or {case.attrib.get("name") for case in cases} != required:
+                  raise SystemExit("checkpoint JUnit inventory differs from the exact 12 required cases")
+              suites = [root] if root.tag == "testsuite" else root.findall(".//testsuite")
+              assertions = sum(int(suite.attrib.get("tests", "0")) for suite in suites)
+              if assertions <= 0:
+                  raise SystemExit("checkpoint JUnit contains no executed assertions")
+              for outcome in ("failures", "errors", "skipped"):
+                  if any(int(suite.attrib.get(outcome, "0")) != 0 for suite in suites):
+                      raise SystemExit(f"checkpoint JUnit reports {outcome}")
+              if any(root.findall(f".//{outcome}") for outcome in ("failure", "error", "skipped")):
+                  raise SystemExit("checkpoint JUnit contains failed, errored, or skipped cases")
+              status.write_text(
+                  f"result=passed\ncase_count={len(cases)}\nassertion_count={assertions}\n",
+                  encoding="utf-8",
+              )
+          except BaseException:
+              write_status(status, "failed")
+              raise
+          PY
+
       - name: Write bounded artifact manifest
         if: always()
         run: |
@@ -206,6 +287,19 @@ jobs:
             ci/tui-pr-gate/${{ matrix.platform }}/audit-catalog-pr-focus.junit.xml
             ci/tui-pr-gate/${{ matrix.platform }}/status.txt
             ci/tui-pr-gate/${{ matrix.platform }}/manifest.txt
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
+
+      - name: Upload bounded checkpoint evidence
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.checkpoint_regressions }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: checkpoint-pr-gate-${{ matrix.platform }}
+          path: |
+            ci/checkpoint-pr-gate/${{ matrix.platform }}/checkpoint-pr-focus.junit.xml
+            ci/checkpoint-pr-gate/${{ matrix.platform }}/status.txt
+            ci/checkpoint-pr-gate/${{ matrix.platform }}/manifest.txt
           if-no-files-found: error
           retention-days: 7
           compression-level: 6

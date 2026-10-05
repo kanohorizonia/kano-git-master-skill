@@ -129,3 +129,12 @@ always-run aggregator or equivalent branch-protection design is established.
 Operators should use `workflow_dispatch` when a focused reproduction is needed.
 For a manual run, the manifest records `git rev-parse HEAD`, rather than
 assuming the UI-selected ref or `GITHUB_SHA` resolved to the intended commit.
+
+For KOG-TSK-0142 acceptance reconciliation, set the optional manual
+`checkpoint_regressions=true` input with an immutable `source_ref`. The same
+Release build and existing TUI gates then also execute exactly the 12 tagged
+cooperative checkpoint CLI cases, requiring positive assertion counts and zero
+failures, errors, or skips. Separate `checkpoint-pr-gate-<platform>` artifacts
+contain only capped JUnit, explicit passed/failed/not-run status, and a manifest
+binding the actual checkout SHA. This option defaults to false and does not
+change pull-request checks or release lanes.
