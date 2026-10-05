@@ -274,6 +274,26 @@ unrelated staged entries, rejects stale HEAD and existing `index.lock`, and neve
 deletes another process's lock. An active queue batch requires the matching
 `--queue-batch` id. See `docs/guides/agent-mutation-queue.md`.
 
+For a stable, authorized same-file overlap, capture the pre-existing staged and
+working versions before editing:
+
+```bash
+kog agent-queue checkpoint capture --id <id> --path src/file.cpp --source <provenance> --work-item <ticket> --owner-stable
+kog commit --exact-path src/file.cpp --overlap-checkpoint <id> -m "[Git][Chore] Own change (<ticket>)"
+```
+
+The capture receipt records HEAD, staged, and raw working blob identities,
+modes, original index intent, and provenance. The commit route saves WIP on a
+separate local `refs/kog/checkpoints/<id>` ref, then commits only the provably
+separable caller change on its owned `codex/` or `feature/` branch. It preserves
+unrelated staged entries and rebases the selected staged intent. Binary or
+inseparable overlaps, secret-bearing content, active writers, and drift block.
+Checkpoint `saved` does not mean `tested`, `integrated`, `published`, or
+`consumed`; no main merge or push occurs. A `recovery_required` receipt means an
+own commit exists but exact post-commit reconciliation was not proven; inspect
+its SHA and recovery ref before any retry. This is a native source-worktree
+contract, not evidence that an installed KOG binary has consumed it.
+
 ## Dogfood Regression Backfill
 
 When real dogfood or production behavior breaks, fix the verified root cause and
