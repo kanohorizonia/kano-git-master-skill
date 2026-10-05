@@ -29,12 +29,67 @@
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/terminal.hpp>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
+namespace {
+
+#ifdef _WIN32
+// KOG-BUG-0146: bounded test-only stage-trace file writer.  Mirrors the
+// production main.cpp helper so the same diag log captures the production
+// TUI's checkpoint progression through RunFtxuiDashboard.  Production
+// operators never set KOG_TUI_TEST_DIAG_LOG; the path check is the
+// opt-in gate.
+void WriteKogBug0146Diag(const char* InMessage) {
+    if (InMessage == nullptr) {
+        return;
+    }
+    const char* testMode = std::getenv("KOG_TEST_MODE");
+    if (testMode == nullptr || std::string(testMode) != "1") {
+        return;
+    }
+    const char* path = std::getenv("KOG_TUI_TEST_DIAG_LOG");
+    if (path == nullptr || *path == '\0') {
+        return;
+    }
+    HANDLE file = CreateFileA(
+        path, FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    char buf[512];
+    const int n = std::snprintf(
+        buf, sizeof(buf), "%s\tpid=%lu\ttid=%lu\n", InMessage,
+        static_cast<unsigned long>(GetCurrentProcessId()),
+        static_cast<unsigned long>(GetCurrentThreadId()));
+    if (n > 0) {
+        DWORD written = 0;
+        (void)WriteFile(file, buf, static_cast<DWORD>(n), &written, nullptr);
+    }
+    CloseHandle(file);
+}
+#else
+void WriteKogBug0146Diag(const char*) {}
+#endif
+
+}  // namespace
+
 #include <algorithm>
 #include <atomic>
 #include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -2428,10 +2483,14 @@ auto BuildDiscoverLines(const std::vector<RepoView>& repos, const std::filesyste
 auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int {
     using namespace ftxui;
 
+    // KOG-BUG-0146: test-only stage checkpoint.
+    WriteKogBug0146Diag("diag=run_ftxui_dashboard_entered");
+
     // This is the earliest shared interactive runner seam.  Keep rejected
     // invocations out of all terminal mutation, including guard capture,
     // code-page setup, FTXUI construction, and fullscreen/ANSI entry.
     auto terminalSession = StartTuiTerminalSession();
+    WriteKogBug0146Diag("diag=start_tui_terminal_session_returned");
     if (!terminalSession.preflight.Accepted()) {
         std::cerr << "kog tui: "
                   << DescribeTuiTerminalPreflightFailure(
@@ -2439,6 +2498,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                   << "\n";
         return 3;
     }
+    WriteKogBug0146Diag("diag=preflight_accepted");
 
 #ifdef KOG_PLATFORM_WINDOWS
     // Ensure the Windows console interprets subprocess output as UTF-8.
@@ -6715,6 +6775,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
     });
 
     screen.Loop(ui);
+    WriteKogBug0146Diag("diag=screen_loop_returned");
     finish_async_operation();
     std::cout << "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l" << std::flush;
     return 0;
