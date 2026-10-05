@@ -141,7 +141,7 @@ jobs:
       - name: Build release TUI binaries
         run: |
           set -euo pipefail
-          cd src/cpp/shared/infra
+          cd "$GITHUB_WORKSPACE/src/cpp/shared/infra"
           case "$RUNNER_OS" in
             Windows)
               export KANO_CPP_ROOT="$GITHUB_WORKSPACE/src/cpp"
