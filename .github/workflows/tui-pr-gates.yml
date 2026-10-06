@@ -119,33 +119,17 @@ jobs:
         run: pixi install --locked --manifest-path src/cpp/shared/infra/pixi.toml
 
       - name: Build release TUI binaries
+        # P1 (KOG-BUG-0146 follow-up): stable, re-entrant executable build
+        # entrypoint.  Replaces the prior step that `source`d
+        # scripts/lib/unix_preset_build.sh and scripts/lib/windows_preset_build.sh
+        # from the ephemeral GitHub Actions step, both of which re-enter
+        # through kano_cpp_infra_watchdog_enter and kano_pixi_bootstrap_activate.
+        # That double-source path caused step 8 to fail in 1 second on
+        # macos-arm64 and windows-x64.  The new entrypoint is a single
+        # bash script that does not `source` the preset helpers and is
+        # safe to invoke from any CI step context.
         run: |
-          set -euo pipefail
-          cd src/cpp/shared/infra
-          case "$RUNNER_OS" in
-            Windows)
-              export KANO_CPP_ROOT="$GITHUB_WORKSPACE/src/cpp"
-              source scripts/lib/windows_preset_build.sh
-              kano_windows_run_preset "${{ matrix.configure_preset }}" "${{ matrix.build_preset }}" x64
-              ;;
-            macOS)
-              (
-                export INF_CPP_ROOT="$GITHUB_WORKSPACE/src/cpp"
-                export KANO_CPP_ROOT="$INF_CPP_ROOT"
-                export INF_BUILD_USE_LLVM=0
-                source scripts/lib/unix_preset_build.sh
-                set +u
-                kano_cpp_run_unix_preset "${{ matrix.configure_preset }}" "${{ matrix.build_preset }}" INF
-              )
-              ;;
-            Linux)
-              bash scripts/self/build.sh "${{ matrix.configure_preset }}" "${{ matrix.build_preset }}"
-              ;;
-            *)
-              echo "unsupported TUI PR gate runner: $RUNNER_OS" >&2
-              exit 2
-              ;;
-          esac
+          bash scripts/ci/build-tui-pr-gate.sh "${{ matrix.configure_preset }}" "${{ matrix.build_preset }}"
 
       - name: Run exact TUI PR focus selector and release smoke
         run: |
