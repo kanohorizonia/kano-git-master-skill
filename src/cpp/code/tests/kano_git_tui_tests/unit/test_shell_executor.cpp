@@ -7,6 +7,7 @@
 #include <cstring>
 #include <cstdint>
 #include <cstdlib>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -121,6 +122,7 @@ TEST_CASE(
 #endif
 
     REQUIRE(result.exitCode == 0);
+    REQUIRE(result.outcome == ExecOutcome::Completed);
     REQUIRE(result.stdoutStr == std::string("A\0B", 3));
     REQUIRE(result.stderrStr == std::string("E\0F", 3));
 }
@@ -171,6 +173,11 @@ TEST_CASE(
     REQUIRE(failedResult.stderr_size == 0);
     REQUIRE_FALSE(failedResult.stderr_truncated);
     REQUIRE_FALSE(failedResult.timed_out);
+    REQUIRE_FALSE(failedResult.cancelled);
+
+    const KanoProcessOptions defaultOptions{};
+    REQUIRE(defaultOptions.cancellation_observer == nullptr);
+    REQUIRE(defaultOptions.cancellation_user_data == nullptr);
 
     KanoProcessResultV2 failedWait;
     std::memset(&failedWait, 0x5A, sizeof(failedWait));
@@ -183,6 +190,7 @@ TEST_CASE(
     REQUIRE(failedWait.stderr_size == 0);
     REQUIRE_FALSE(failedWait.stderr_truncated);
     REQUIRE_FALSE(failedWait.timed_out);
+    REQUIRE_FALSE(failedWait.cancelled);
 
 #if !defined(_WIN32)
     const ScopedTempDirectory temp;
@@ -376,7 +384,60 @@ TEST_CASE(
         50);
 #endif
     REQUIRE(result.exitCode == 124);
+    REQUIRE(result.outcome == ExecOutcome::TimedOut);
     REQUIRE(result.stderrStr.find("timeout") != std::string::npos);
+}
+
+TEST_CASE(
+    "ShellExecutor cancellation observer stops an already-running capture",
+    "[Unit][shell-executor][cancellation][KOG-BUG-0107]") {
+    std::atomic<bool> cancelRequested{false};
+    const ProgressCallback observeStart =
+        [&](const std::string_view InChunk, const bool bIsStderr) {
+            if (!bIsStderr && InChunk.find("READY") != std::string_view::npos) {
+                cancelRequested.store(true, std::memory_order_release);
+            }
+        };
+    const CancellationObserver observeCancellation = [&]() {
+        return cancelRequested.load(std::memory_order_acquire);
+    };
+
+    const auto startedAt = std::chrono::steady_clock::now();
+#if defined(_WIN32)
+    const auto result = ExecuteCommand(
+        "powershell",
+        {
+            "-NoProfile",
+            "-Command",
+            "[Console]::Out.WriteLine('READY');"
+            "[Console]::Out.Flush();"
+            "Start-Sleep -Seconds 10",
+        },
+        ExecMode::Capture,
+        std::nullopt,
+        observeStart,
+        3000,
+        CaptureLimits{},
+        observeCancellation);
+#else
+    const auto result = ExecuteCommand(
+        "sh",
+        {"-c", "printf 'READY\\n'; sleep 10"},
+        ExecMode::Capture,
+        std::nullopt,
+        observeStart,
+        3000,
+        CaptureLimits{},
+        observeCancellation);
+#endif
+    const auto elapsed = std::chrono::steady_clock::now() - startedAt;
+
+    REQUIRE(cancelRequested.load(std::memory_order_acquire));
+    REQUIRE(result.outcome == ExecOutcome::Cancelled);
+    REQUIRE(result.exitCode != 124);
+    REQUIRE(result.stdoutStr.find("READY") != std::string::npos);
+    REQUIRE(result.stderrStr.find("[kog-timeout]") == std::string::npos);
+    REQUIRE(elapsed < std::chrono::milliseconds(2500));
 }
 
 TEST_CASE("ShellExecutor capture drains stdout/stderr without truncation", "[Unit][shell-executor][windows]") {

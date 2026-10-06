@@ -1,15 +1,20 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include "shell_executor.hpp"
 #include "tui_async_lifecycle.hpp"
 
 using kano::git::commands::CompleteTuiAsyncOperation;
 using kano::git::commands::CancelTuiAsyncSurface;
+using kano::git::commands::ClassifyTuiAsyncProcessResult;
 using kano::git::commands::DismissTuiAsyncSurface;
 using kano::git::commands::IsCurrentTuiAsyncOperation;
 using kano::git::commands::RequestTuiAsyncExit;
 using kano::git::commands::TryBeginTuiAsyncOperation;
 using kano::git::commands::TuiAsyncLifecycleState;
+using kano::git::commands::TuiAsyncProcessCompletion;
 using kano::git::commands::TuiAsyncSurface;
+using kano::git::shell::ExecOutcome;
+using kano::git::shell::ExecResult;
 
 TEST_CASE(
     "dismissed TUI async detail completion fills cache without reopening",
@@ -129,4 +134,43 @@ TEST_CASE(
             TuiAsyncSurface::Discover,
             true)
             .has_value());
+}
+
+TEST_CASE(
+    "TUI async process completion uses the typed cancellation outcome",
+    "[unit][tui_async_lifecycle][cancellation][KOG-BUG-0107]") {
+    const ExecResult cancelled{
+        .exitCode = 143,
+        .stderrStr = "owned process tree stopped",
+        .outcome = ExecOutcome::Cancelled,
+    };
+    REQUIRE(
+        ClassifyTuiAsyncProcessResult(cancelled) ==
+        TuiAsyncProcessCompletion::Cancelled);
+
+    const ExecResult misleadingFailure{
+        .exitCode = 1,
+        .stderrStr = "operation was not cancelled",
+        .outcome = ExecOutcome::Completed,
+    };
+    REQUIRE(
+        ClassifyTuiAsyncProcessResult(misleadingFailure) ==
+        TuiAsyncProcessCompletion::Failed);
+
+    const ExecResult timedOut{
+        .exitCode = 124,
+        .stderrStr = "timeout",
+        .outcome = ExecOutcome::TimedOut,
+    };
+    REQUIRE(
+        ClassifyTuiAsyncProcessResult(timedOut) ==
+        TuiAsyncProcessCompletion::Failed);
+
+    const ExecResult completed{
+        .exitCode = 0,
+        .outcome = ExecOutcome::Completed,
+    };
+    REQUIRE(
+        ClassifyTuiAsyncProcessResult(completed) ==
+        TuiAsyncProcessCompletion::Completed);
 }

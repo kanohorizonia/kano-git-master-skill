@@ -18,11 +18,13 @@ enum class DiscoverScope {
 using DiscoverGitLaunchGuard = std::function<bool(
     const std::filesystem::path&,
     const std::vector<std::string>&)>;
+using DiscoverCancellationObserver = std::function<bool()>;
 
 struct DiscoverGitExecutionControl {
     // Called immediately before each Git subprocess owned by discovery.
     // Returning false aborts before that subprocess starts.
     DiscoverGitLaunchGuard launchGuard;
+    DiscoverCancellationObserver cancellationObserver;
     std::optional<unsigned int> timeoutMs;
     // Zero preserves core's default capture policy. Audit surfaces set an
     // explicit budget and reject truncated discovery output fail-closed.

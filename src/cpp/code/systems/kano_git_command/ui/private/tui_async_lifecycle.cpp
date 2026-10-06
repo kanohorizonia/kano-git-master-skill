@@ -1,8 +1,23 @@
 #include "tui_async_lifecycle.hpp"
 
+#include "shell_executor.hpp"
+
 #include <limits>
 
 namespace kano::git::commands {
+
+auto ClassifyTuiAsyncProcessResult(
+    const kano::git::shell::ExecResult& InResult)
+    -> TuiAsyncProcessCompletion {
+    if (InResult.outcome == kano::git::shell::ExecOutcome::Cancelled) {
+        return TuiAsyncProcessCompletion::Cancelled;
+    }
+    if (InResult.outcome == kano::git::shell::ExecOutcome::Completed &&
+        InResult.exitCode == 0) {
+        return TuiAsyncProcessCompletion::Completed;
+    }
+    return TuiAsyncProcessCompletion::Failed;
+}
 
 auto TryBeginTuiAsyncOperation(
     TuiAsyncLifecycleState& InOutState,

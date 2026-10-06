@@ -96,6 +96,14 @@ auto CaptureProcessOutput(KanoProcessStream InStream,
     }
 }
 
+auto ObserveProcessCancellation(void* InUserData) -> bool {
+    if (InUserData == nullptr) {
+        return false;
+    }
+    const auto& observer = *static_cast<CancellationObserver*>(InUserData);
+    return observer && observer();
+}
+
 auto EmitStdoutLine(const std::string& InText) -> void {
     if (!g_commandLogCallbacksStack.empty() && g_commandLogCallbacksStack.back().onStdout) {
         g_commandLogCallbacksStack.back().onStdout(InText);
@@ -473,10 +481,11 @@ auto EmitProcessDiag(const std::string& InText) -> void {
 }
 
 auto RunProcess(const std::string& cmdLine, ExecMode InMode,
-                const std::optional<unsigned int>& InTimeoutMs,
-                const std::optional<std::filesystem::path>& InWorkingDir,
-                ProgressCallback InProgressCallback,
-                CaptureLimits InCaptureLimits) -> ExecResult
+                 const std::optional<unsigned int>& InTimeoutMs,
+                 const std::optional<std::filesystem::path>& InWorkingDir,
+                 ProgressCallback InProgressCallback,
+                 CaptureLimits InCaptureLimits,
+                 CancellationObserver InCancellationObserver) -> ExecResult
 {
     // Convert cmdLine narrow string to wide for CommandLineToArgvW
     int wideLen = ::MultiByteToWideChar(CP_UTF8, 0, cmdLine.c_str(), -1, nullptr, 0);
@@ -548,6 +557,10 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
         opts.output_callback = CaptureProcessOutput;
         opts.user_data = &capture;
     }
+    if (InCancellationObserver) {
+        opts.cancellation_observer = ObserveProcessCancellation;
+        opts.cancellation_user_data = &InCancellationObserver;
+    }
 
     const KanoProcessCaptureLimitsV2 nativeLimits{
         InCaptureLimits.stdoutMaxBytes,
@@ -565,6 +578,9 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
 
     ExecResult result;
     result.exitCode = kresult.exit_code;
+    result.outcome = kresult.cancelled
+        ? ExecOutcome::Cancelled
+        : (kresult.timed_out ? ExecOutcome::TimedOut : ExecOutcome::Completed);
     if (capture.capture) {
         result.stdoutStr = std::move(capture.stdoutBytes);
         result.stderrStr = std::move(capture.stderrBytes);
@@ -588,7 +604,14 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
                 const std::optional<unsigned int>& InTimeoutMs,
                 const std::optional<std::filesystem::path>& InWorkingDir) -> ExecResult
 {
-    return RunProcess(cmdLine, InMode, InTimeoutMs, InWorkingDir, ProgressCallback{}, CaptureLimits{});
+    return RunProcess(
+        cmdLine,
+        InMode,
+        InTimeoutMs,
+        InWorkingDir,
+        ProgressCallback{},
+        CaptureLimits{},
+        CancellationObserver{});
 }
 
 #else  // Unix
@@ -596,10 +619,11 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
 auto RunProcessUnix(const std::string& InCommand,
                     const std::vector<std::string>& InArgs,
                     ExecMode InMode,
-                    const std::optional<unsigned int>& InTimeoutMs,
-                    const std::optional<std::filesystem::path>& InWorkingDir,
-                    ProgressCallback InProgressCallback,
-                    CaptureLimits InCaptureLimits) -> ExecResult {
+                     const std::optional<unsigned int>& InTimeoutMs,
+                     const std::optional<std::filesystem::path>& InWorkingDir,
+                     ProgressCallback InProgressCallback,
+                     CaptureLimits InCaptureLimits,
+                     CancellationObserver InCancellationObserver) -> ExecResult {
     // kano_process prepends executable as argv[0], so pass only user args here.
     std::vector<const char*> argv;
     argv.reserve(InArgs.size() + 1);
@@ -627,6 +651,10 @@ auto RunProcessUnix(const std::string& InCommand,
         opts.output_callback = CaptureProcessOutput;
         opts.user_data = &capture;
     }
+    if (InCancellationObserver) {
+        opts.cancellation_observer = ObserveProcessCancellation;
+        opts.cancellation_user_data = &InCancellationObserver;
+    }
 
     const KanoProcessCaptureLimitsV2 nativeLimits{
         InCaptureLimits.stdoutMaxBytes,
@@ -644,6 +672,9 @@ auto RunProcessUnix(const std::string& InCommand,
 
     ExecResult result;
     result.exitCode = kresult.exit_code;
+    result.outcome = kresult.cancelled
+        ? ExecOutcome::Cancelled
+        : (kresult.timed_out ? ExecOutcome::TimedOut : ExecOutcome::Completed);
     if (capture.capture) {
         result.stdoutStr = std::move(capture.stdoutBytes);
         result.stderrStr = std::move(capture.stderrBytes);
@@ -675,7 +706,8 @@ auto RunProcessUnix(const std::string& InCommand,
         InTimeoutMs,
         InWorkingDir,
         ProgressCallback{},
-        CaptureLimits{});
+        CaptureLimits{},
+        CancellationObserver{});
 }
 
 auto FirstGitSubcommand(const std::vector<std::string>& InArgs) -> std::string {
@@ -1132,8 +1164,7 @@ auto SafeNextActionForTimeout(const std::string& InCommand,
 }
 
 auto IsTimeoutResult(const ExecResult& InResult) -> bool {
-    return InResult.stderrStr.find("Process timeout") != std::string::npos ||
-           InResult.stderrStr.find("Process timed out") != std::string::npos;
+    return InResult.outcome == ExecOutcome::TimedOut;
 }
 
 auto BuildTimeoutSummary(const std::string& InTimeoutSource,
@@ -1316,19 +1347,6 @@ auto WithGitNonInteractiveDefaults(const std::string& InCommand,
     // - KOG_GIT_INTERACTIVE=1|true   => interactive
     // - KOG_GIT_INTERACTIVE=0|false  => non-interactive
     // - KOG_GIT_INTERACTIVE=auto/unset => agent mode non-interactive, human mode interactive
-    //
-    // The agent-mode truthy check mirrors the canonical contract defined in
-    // kano_git_command/runtime/ai_utils.cpp::IsAgentModeEnabled so all KOG
-    // command paths stay consistent. We re-declare it locally because this
-    // shell layer must not depend on the command layer.
-    auto isAgentModeTruthy = [](const char* name) -> bool {
-        const char* raw = std::getenv(name);
-        if (raw == nullptr) {
-            return false;
-        }
-        const auto value = ToLower(std::string(raw));
-        return value == "1" || value == "true" || value == "yes" || value == "on";
-    };
     bool forceNonInteractive = false;
     if (const auto* interactive = std::getenv("KOG_GIT_INTERACTIVE"); interactive != nullptr) {
         const auto value = ToLower(std::string(interactive));
@@ -1338,13 +1356,18 @@ auto WithGitNonInteractiveDefaults(const std::string& InCommand,
         if (value == "0" || value == "false") {
             forceNonInteractive = true;
         } else {
-            // Consult both accepted env names (canonical contract).
-            forceNonInteractive = isAgentModeTruthy("KANO_AGENT_MODE") ||
-                                  isAgentModeTruthy("AGENT_MODE");
+            const auto* agent = std::getenv("KANO_AGENT_MODE");
+            if (agent != nullptr) {
+                const auto agentValue = ToLower(std::string(agent));
+                forceNonInteractive = (agentValue == "1" || agentValue == "true");
+            }
         }
     } else {
-        forceNonInteractive = isAgentModeTruthy("KANO_AGENT_MODE") ||
-                              isAgentModeTruthy("AGENT_MODE");
+        const auto* agent = std::getenv("KANO_AGENT_MODE");
+        if (agent != nullptr) {
+            const auto agentValue = ToLower(std::string(agent));
+            forceNonInteractive = (agentValue == "1" || agentValue == "true");
+        }
     }
 
     if (!forceNonInteractive) {
@@ -1431,7 +1454,8 @@ auto ExecuteCommand(
     std::optional<std::filesystem::path> InWorkingDir,
     ProgressCallback InProgressCallback,
     std::optional<unsigned int> InTimeoutOverrideMs,
-    CaptureLimits InCaptureLimits
+    CaptureLimits InCaptureLimits,
+    CancellationObserver InCancellationObserver
 ) -> ExecResult
 {
     const auto nonInteractiveArgs = WithGitNonInteractiveDefaults(InCommand, InArgs);
@@ -1549,14 +1573,35 @@ auto ExecuteCommand(
         std::vector<std::string> wrappedArgs{"/d", "/s"};
         wrappedArgs.insert(wrappedArgs.end(), effectiveArgs.begin(), effectiveArgs.end());
         const auto wrapped = BuildWindowsCommandProcessorLine(wrappedArgs);
-        result = RunProcess(wrapped, InMode, timeoutMs, InWorkingDir, InProgressCallback, InCaptureLimits);
+        result = RunProcess(
+            wrapped,
+            InMode,
+            timeoutMs,
+            InWorkingDir,
+            InProgressCallback,
+            InCaptureLimits,
+            InCancellationObserver);
     } else if (IsCmdScriptCommand(effectiveCommand)) {
         const auto wrapped = BuildWindowsBatchCommandLine(effectiveCommand, effectiveArgs);
-        result = RunProcess(wrapped, InMode, timeoutMs, InWorkingDir, InProgressCallback, InCaptureLimits);
+        result = RunProcess(
+            wrapped,
+            InMode,
+            timeoutMs,
+            InWorkingDir,
+            InProgressCallback,
+            InCaptureLimits,
+            InCancellationObserver);
     } else {
         // Build command line with executable at start (for CreateProcessA parsing)
         auto cmd = BuildCommandLine(effectiveCommand, effectiveArgs);
-        result = RunProcess(cmd, InMode, timeoutMs, InWorkingDir, InProgressCallback, InCaptureLimits);
+        result = RunProcess(
+            cmd,
+            InMode,
+            timeoutMs,
+            InWorkingDir,
+            InProgressCallback,
+            InCaptureLimits,
+            InCancellationObserver);
     }
 
     const bool timedOut = IsTimeoutResult(result);
@@ -1609,7 +1654,8 @@ auto ExecuteCommand(
         timeoutMs,
         InWorkingDir,
         InProgressCallback,
-        InCaptureLimits);
+        InCaptureLimits,
+        InCancellationObserver);
     const bool timedOut = IsTimeoutResult(result);
     if (timedOut) {
         const auto timeoutSummary = BuildTimeoutSummary(timeoutSource, timeoutMs, commandFamily, safeNextAction);

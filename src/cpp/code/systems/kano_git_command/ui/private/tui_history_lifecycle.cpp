@@ -28,7 +28,8 @@ auto TrimHistoryText(std::string InValue) -> std::string {
 
 auto ExecuteHistoryProbe(
     const std::filesystem::path& InRepo,
-    const std::vector<std::string>& InArguments)
+    const std::vector<std::string>& InArguments,
+    const TuiGitProbeControl& InControl)
     -> TuiHistoryProbeResult {
     const auto result = shell::ExecuteCommand(
         "git",
@@ -37,13 +38,15 @@ auto ExecuteHistoryProbe(
         InRepo,
         shell::ProgressCallback{},
         kHistoryProbeTimeoutMs,
-        shell::CaptureLimits{kTuiStatusMaxBytes, kTuiStatusMaxBytes});
+        shell::CaptureLimits{kTuiStatusMaxBytes, kTuiStatusMaxBytes},
+        InControl.isCancelled);
     return {
         .exitCode = result.exitCode,
         .stdoutText = result.stdoutStr,
         .stderrText = result.stderrStr,
         .stdoutTruncated = result.stdoutTruncated,
         .stderrTruncated = result.stderrTruncated,
+        .cancelled = result.outcome == shell::ExecOutcome::Cancelled,
     };
 }
 
@@ -165,16 +168,30 @@ auto FetchTuiHistoryBatch(
 
     const auto execute = InExecutor
         ? InExecutor
-        : TuiHistoryProbeExecutor{ExecuteHistoryProbe};
+        : TuiHistoryProbeExecutor{
+              [&InControl](
+                  const std::filesystem::path& InProbeRepo,
+                  const std::vector<std::string>& InArguments) {
+                  return ExecuteHistoryProbe(
+                      InProbeRepo,
+                      InArguments,
+                      InControl);
+              }};
     result.anchorSha = InAnchorSha;
     if (result.anchorSha.empty()) {
         const std::vector<std::string> anchorArguments{
             "rev-parse", "--verify", "--quiet", "HEAD"};
         if (!TryBeginTuiGitProbe(InControl, anchorArguments)) {
+            result.cancelled = true;
             result.errorMessage = "history load cancelled";
             return result;
         }
         const auto anchor = execute(InRepo, anchorArguments);
+        if (anchor.cancelled) {
+            result.cancelled = true;
+            result.errorMessage = "history load cancelled";
+            return result;
+        }
         if (anchor.stdoutTruncated || anchor.stderrTruncated) {
             result.errorMessage =
                 "history anchor output exceeded the TUI audit budget";
@@ -205,10 +222,16 @@ auto FetchTuiHistoryBatch(
         result.anchorSha,
     };
     if (!TryBeginTuiGitProbe(InControl, logArguments)) {
+        result.cancelled = true;
         result.errorMessage = "history load cancelled";
         return result;
     }
     const auto output = execute(InRepo, logArguments);
+    if (output.cancelled) {
+        result.cancelled = true;
+        result.errorMessage = "history load cancelled";
+        return result;
+    }
     if (output.stdoutTruncated || output.stderrTruncated) {
         result.errorMessage =
             "history output exceeded the TUI audit budget; no partial page was accepted";

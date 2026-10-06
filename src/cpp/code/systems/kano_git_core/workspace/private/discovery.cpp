@@ -42,7 +42,8 @@ public:
     explicit ScopedDiscoveryGitExecutionControl(
         const DiscoverGitExecutionControl& InControl)
         : previous_(GDiscoveryGitExecutionControl) {
-        if (InControl.launchGuard || InControl.timeoutMs.has_value() ||
+        if (InControl.launchGuard || InControl.cancellationObserver ||
+            InControl.timeoutMs.has_value() ||
             InControl.maxCaptureBytes > 0) {
             GDiscoveryGitExecutionControl = &InControl;
             installed_ = true;
@@ -843,6 +844,10 @@ auto RunGitCapture(const std::filesystem::path& InRepoPath, const std::vector<st
     const auto timeout = GDiscoveryGitExecutionControl != nullptr
         ? GDiscoveryGitExecutionControl->timeoutMs
         : std::optional<unsigned int>{};
+    const auto cancellationObserver =
+        GDiscoveryGitExecutionControl != nullptr
+        ? GDiscoveryGitExecutionControl->cancellationObserver
+        : DiscoverCancellationObserver{};
     const auto maxCaptureBytes =
         GDiscoveryGitExecutionControl != nullptr
         ? GDiscoveryGitExecutionControl->maxCaptureBytes
@@ -857,9 +862,14 @@ auto RunGitCapture(const std::filesystem::path& InRepoPath, const std::vector<st
         std::nullopt,
         shell::ProgressCallback{},
         timeout,
-        captureLimits);
+        captureLimits,
+        cancellationObserver);
+    if (result.outcome == shell::ExecOutcome::Cancelled) {
+        throw std::runtime_error(
+            "workspace discovery cancelled during Git probe");
+    }
     if (timeout.has_value() &&
-        result.stderrStr.find("[kog-timeout]") != std::string::npos) {
+        result.outcome == shell::ExecOutcome::TimedOut) {
         throw std::runtime_error(
             "workspace discovery Git probe exceeded the audit timeout");
     }

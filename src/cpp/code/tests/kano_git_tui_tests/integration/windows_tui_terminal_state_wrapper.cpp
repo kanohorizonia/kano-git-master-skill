@@ -1,13 +1,20 @@
 // Windows-only companion for the ConPTY smoke test.  It owns the same
 // pseudoconsole as the production binary and can therefore prove that the
 // production process restored that terminal's modes and code pages.
+//
+// KOG-BUG-0107 round 5: stage checkpoint emitter.  When the env var
+// KOG_TUI_TEST_STAGE_LOG is set (absolute file path), each major
+// checkpoint appends "stage=N<tab>msg\n" so the test process can read
+// it after the wrapper exits and determine exactly which stage the
+// production launch reached.  This is the only new behaviour; the
+// existing console-restoration contract is unchanged.
 
 #include <windows.h>
-#include <kano_unattended.hpp>
 
 #include <cstddef>
 #include <cerrno>
 #include <cstdint>
+#include <cstdio>
 #include <cwchar>
 #include <iostream>
 #include <limits>
@@ -15,6 +22,52 @@
 #include <vector>
 
 namespace {
+
+std::wstring GetStageLogPath() {
+    wchar_t buffer[32767]{};
+    const DWORD len = GetEnvironmentVariableW(L"KOG_TUI_TEST_STAGE_LOG",
+        buffer, sizeof(buffer) / sizeof(buffer[0]));
+    if (len == 0U || len >= sizeof(buffer) / sizeof(buffer[0])) {
+        return {};
+    }
+    return std::wstring(buffer);
+}
+
+void WriteStage(const wchar_t* InTag) {
+    const auto path = GetStageLogPath();
+    if (path.empty()) return;
+    // std::ofstream::open takes const char* (or filesystem::path in C++17).
+    // Use Windows CreateFileW directly to avoid ambiguity and keep this
+    // test-only writer minimal and dependency-free.
+    HANDLE file = CreateFileW(
+        path.c_str(),
+        FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    if (file == INVALID_HANDLE_VALUE) return;
+    std::string utf8;
+    utf8.append("stage=");
+    for (const wchar_t* p = InTag; *p != L'\0'; ++p) {
+        const wchar_t c = *p;
+        if (c < 0x80) {
+            utf8.push_back(static_cast<char>(c));
+        }
+    }
+    char buf[512];
+    const int n = std::snprintf(
+        buf, sizeof(buf), "%s\tpid=%lu\ttid=%lu\n",
+        utf8.c_str(),
+        static_cast<unsigned long>(GetCurrentProcessId()),
+        static_cast<unsigned long>(GetCurrentThreadId()));
+    if (n > 0) {
+        DWORD written = 0;
+        (void)WriteFile(file, buf, static_cast<DWORD>(n), &written, nullptr);
+    }
+    CloseHandle(file);
+}
 
 class ScopedHandle final {
   public:
@@ -210,36 +263,72 @@ auto WriteConsoleEvidence(const ScopedHandle& InOutput, const char* InBytes,
 } // namespace
 
 auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
-    kano::infra::ConfigureUnattendedExecution();
+    // KOG-BUG-0107 round 5: also stream stage events to stdout so the
+    // test's transcript capture (host->outputRead pipe) records them even
+    // when the stage-file path cannot be created on this runner.  Use
+    // std::cout because the host binds both hStdOutput and hStdError to
+    // the same ConPTY output pipe and std::cout is the existing channel
+    // the rest of this file uses.
+    auto StderrStage = [](const wchar_t* InTag) {
+        std::fputws(L"[KOG_BUG_0107 wrapper stage] ", stdout);
+        std::fputws(InTag, stdout);
+        std::fputwc(L'\n', stdout);
+        std::fflush(stdout);
+    };
+    WriteStage(L"stage01_wrapper_entered");
+    StderrStage(L"stage01_wrapper_entered");
     if (InArgumentCount < 2 || InArguments[1] == nullptr ||
         InArguments[1][0] == L'\0') {
+        WriteStage(L"stage01_failed_missing_binary");
+        StderrStage(L"stage01_failed_missing_binary");
         return PrintFailure("missing-production-binary");
     }
-    if (InArgumentCount != 5 || InArguments[2] == nullptr ||
-        std::wcscmp(InArguments[2], L"--test-cancel-ack") != 0) {
-        return PrintFailure("missing-test-cancel-ack");
+    WriteStage(L"stage02_args_parsed");
+    StderrStage(L"stage02_args_parsed");
+    // KOG-BUG-0107: in --test-skip-startup-harness mode the wrapper still
+    // sets KOG_TEST_MODE=1 (other test infrastructure needs it) but does
+    // not set the startup cancel-ack env vars; the production TUI then
+    // proceeds without the harness, so an owned subprocess is already
+    // running when q/Esc arrives.
+    const bool harnessMode = InArgumentCount == 5 &&
+        InArguments[2] != nullptr &&
+        std::wcscmp(InArguments[2], L"--test-cancel-ack") == 0;
+    const bool skipHarnessMode = InArgumentCount == 3 &&
+        InArguments[2] != nullptr &&
+        std::wcscmp(InArguments[2], L"--test-skip-startup-harness") == 0;
+    if (!harnessMode && !skipHarnessMode) {
+        return PrintFailure("missing-test-mode-flag");
     }
     HANDLE armedEvent = nullptr;
     HANDLE acknowledgementEvent = nullptr;
     DWORD failureError = ERROR_SUCCESS;
-    if (!ParseInheritedEventHandle(InArguments[3], armedEvent, failureError) ||
-        !ParseInheritedEventHandle(InArguments[4], acknowledgementEvent, failureError) ||
-        armedEvent == acknowledgementEvent) {
+    if (harnessMode &&
+        (!ParseInheritedEventHandle(InArguments[3], armedEvent, failureError) ||
+         !ParseInheritedEventHandle(InArguments[4], acknowledgementEvent, failureError) ||
+         armedEvent == acknowledgementEvent)) {
         return PrintWin32Failure("invalid-cancellation-event-handle", failureError);
     }
 
     ScopedHandle consoleInput;
     ScopedHandle consoleOutput;
+    WriteStage(L"stage03_console_devices_in_use");
+    StderrStage(L"stage03_console_devices_in_use");
     if (!OpenConsoleDevices(consoleInput, consoleOutput, failureError)) {
+        WriteStage(L"stage03_failed_open_console_devices");
+        StderrStage(L"stage03_failed_open_console_devices");
         return PrintWin32Failure("console-device-open-before-launch", failureError);
     }
-    if (SetEnvironmentVariableW(L"KOG_TEST_MODE", L"1") == 0 ||
-        SetEnvironmentVariableW(
-            L"KOG_TUI_TEST_STARTUP_CANCEL_ACK", L"1") == 0 ||
-        SetEnvironmentVariableW(L"KOG_TUI_TEST_STARTUP_CANCEL_ARMED_HANDLE",
-            std::to_wstring(reinterpret_cast<std::uintptr_t>(armedEvent)).c_str()) == 0 ||
-        SetEnvironmentVariableW(L"KOG_TUI_TEST_STARTUP_CANCEL_ACK_HANDLE",
-            std::to_wstring(reinterpret_cast<std::uintptr_t>(acknowledgementEvent)).c_str()) == 0) {
+    if (SetEnvironmentVariableW(L"KOG_TEST_MODE", L"1") == 0) {
+        return PrintWin32Failure(
+            "production-test-environment-unavailable", GetLastError());
+    }
+    if (harnessMode &&
+        (SetEnvironmentVariableW(
+             L"KOG_TUI_TEST_STARTUP_CANCEL_ACK", L"1") == 0 ||
+         SetEnvironmentVariableW(L"KOG_TUI_TEST_STARTUP_CANCEL_ARMED_HANDLE",
+             std::to_wstring(reinterpret_cast<std::uintptr_t>(armedEvent)).c_str()) == 0 ||
+         SetEnvironmentVariableW(L"KOG_TUI_TEST_STARTUP_CANCEL_ACK_HANDLE",
+             std::to_wstring(reinterpret_cast<std::uintptr_t>(acknowledgementEvent)).c_str()) == 0)) {
         return PrintWin32Failure(
             "production-test-environment-unavailable", GetLastError());
     }
@@ -248,12 +337,66 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
     const char* captureFailure = nullptr;
     if (!CaptureConsoleState(
             before, consoleInput, consoleOutput, captureFailure, failureError)) {
+        WriteStage(L"stage04_failed_capture_console_state");
+        StderrStage(L"stage04_failed_capture_console_state");
         return PrintWin32Failure(captureFailure, failureError);
     }
+    WriteStage(L"stage04_console_state_captured");
+    StderrStage(L"stage04_console_state_captured");
 
     std::wstring commandLine = QuoteArgument(InArguments[1]);
-    HANDLE inheritedHandles[] = {consoleInput.Get(), consoleOutput.Get(), armedEvent,
-        acknowledgementEvent};
+    // KOG-BUG-0107 round 5: log the exact command line + cwd + env so we
+    // can compare failing and passing paths without dumping arbitrary
+    // host state.  Stripped to argv-only -- no host-private paths.
+    WriteStage(L"stage03a_command_line_built");
+    {
+        HANDLE file = CreateFileW(
+            GetStageLogPath().c_str(),
+            FILE_APPEND_DATA,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file != INVALID_HANDLE_VALUE) {
+            std::string cmdUtf8 = "argv=";
+            for (const wchar_t* p = commandLine.data();
+                 p != commandLine.data() + commandLine.size(); ++p) {
+                const wchar_t c = *p;
+                cmdUtf8.push_back(c < 0x80 ? static_cast<char>(c) : '?');
+            }
+            cmdUtf8 += "\n";
+            DWORD written = 0;
+            (void)WriteFile(file, cmdUtf8.data(),
+                static_cast<DWORD>(cmdUtf8.size()), &written, nullptr);
+            char cwd[1024]{};
+            const DWORD cwdLen = GetCurrentDirectoryA(sizeof(cwd), cwd);
+            if (cwdLen > 0U && cwdLen < sizeof(cwd)) {
+                std::string cwdLine = "cwd=";
+                cwdLine.append(cwd, cwdLen);
+                cwdLine += "\n";
+                (void)WriteFile(file, cwdLine.data(),
+                    static_cast<DWORD>(cwdLine.size()), &written, nullptr);
+            }
+            CloseHandle(file);
+        }
+    }
+    // In --test-skip-startup-harness mode the harness event handles are
+    // nullptr; passing nullptr entries in PROC_THREAD_ATTRIBUTE_HANDLE_LIST
+    // makes UpdateProcThreadAttribute fail with ERROR_INVALID_PARAMETER.
+    // Build the smallest accurate list so the production launch succeeds.
+    HANDLE inheritedHandles[4]{};
+    SIZE_T inheritedHandleCount = 0;
+    HANDLE inheritedHandlesBuf[2];
+    SIZE_T inheritedHandleCountBuf = 0;
+    if (harnessMode) {
+        inheritedHandles[0] = consoleInput.Get();
+        inheritedHandles[1] = consoleOutput.Get();
+        inheritedHandles[2] = armedEvent;
+        inheritedHandles[3] = acknowledgementEvent;
+        inheritedHandleCount = 4;
+    } else {
+        inheritedHandlesBuf[0] = consoleInput.Get();
+        inheritedHandlesBuf[1] = consoleOutput.Get();
+        inheritedHandleCountBuf = 2;
+    }
     SIZE_T attributeBytes = 0;
     InitializeProcThreadAttributeList(nullptr, 1, 0, &attributeBytes);
     std::vector<std::byte> attributes(attributeBytes);
@@ -268,10 +411,22 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
             if (value != nullptr) DeleteProcThreadAttributeList(value);
         }
     } cleanup{attributeList};
-    if (UpdateProcThreadAttribute(
-            attributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-            inheritedHandles, sizeof(inheritedHandles), nullptr, nullptr) == 0) {
-        return PrintWin32Failure("production-handle-list-init-failed", GetLastError());
+    if (harnessMode) {
+        if (UpdateProcThreadAttribute(
+                attributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                inheritedHandles,
+                inheritedHandleCount * sizeof(HANDLE),
+                nullptr, nullptr) == 0) {
+            return PrintWin32Failure("production-handle-list-init-failed", GetLastError());
+        }
+    } else {
+        if (UpdateProcThreadAttribute(
+                attributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                inheritedHandlesBuf,
+                inheritedHandleCountBuf * sizeof(HANDLE),
+                nullptr, nullptr) == 0) {
+            return PrintWin32Failure("production-handle-list-init-failed", GetLastError());
+        }
     }
 
     STARTUPINFOEXW startup{};
@@ -282,21 +437,83 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
     startup.StartupInfo.hStdError = consoleOutput.Get();
     startup.lpAttributeList = attributeList;
     PROCESS_INFORMATION process{};
+    // KOG-BUG-0107 round 5: capture the full environment that the
+    // wrapper inherits and passes to the production TUI so we can
+    // compare with a known-passing production ConPTY test.
+    WriteStage(L"stage05a_create_process_starting");
+    {
+        HANDLE file = CreateFileW(
+            GetStageLogPath().c_str(),
+            FILE_APPEND_DATA,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file != INVALID_HANDLE_VALUE) {
+            const DWORD kBufSize = 4096;
+            std::vector<wchar_t> buf(kBufSize);
+            for (const wchar_t* name : {
+                    L"KOG_TEST_MODE",
+                    L"KOG_TUI_TEST_STARTUP_CANCEL_ACK",
+                    L"PATH",
+                    L"TMP",
+                    L"TEMP",
+                    L"USERPROFILE",
+            }) {
+                std::string nameUtf8;
+                for (const wchar_t* p = name; *p != L'\0'; ++p) {
+                    nameUtf8.push_back(static_cast<char>(*p));
+                }
+                const DWORD len = GetEnvironmentVariableW(name,
+                    buf.data(), kBufSize);
+                std::string line = "env ";
+                line.append(nameUtf8);
+                if (len == 0U || len >= kBufSize) {
+                    line += "=<absent>\n";
+                } else {
+                    line += "=";
+                    for (DWORD i = 0U; i < len; ++i) {
+                        const wchar_t c = buf[i];
+                        line.push_back(c < 0x80 ? static_cast<char>(c) : '?');
+                    }
+                    line += "\n";
+                }
+                DWORD written = 0;
+                (void)WriteFile(file, line.data(),
+                    static_cast<DWORD>(line.size()), &written, nullptr);
+            }
+            CloseHandle(file);
+        }
+    }
     if (!CreateProcessW(
             nullptr, commandLine.data(), nullptr, nullptr, TRUE,
             EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr,
             &startup.StartupInfo, &process)) {
-        return PrintWin32Failure("production-launch-failed", GetLastError());
+        const DWORD err = GetLastError();
+        WriteStage(L"stage05_failed_create_process");
+        StderrStage(L"stage05_failed_create_process");
+        WriteStage((err == ERROR_INVALID_PARAMETER)
+            ? L"stage05_create_process_error_87_invalid_parameter"
+            : L"stage05_create_process_error_other");
+        return PrintWin32Failure("production-launch-failed", err);
     }
+    WriteStage(L"stage05_create_process_ok");
+    StderrStage(L"stage05_create_process_ok");
     CloseHandle(process.hThread);
 
     // This is an independent diagnostic deadline.  The outer controller is
     // the sole hard safety bound for this process tree.
     constexpr DWORD kProductionExitTimeoutMs = 5'000;
     constexpr DWORD kProductionTerminateJoinTimeoutMs = 500;
+    WriteStage(L"stage06_waiting_for_production_exit");
+    StderrStage(L"stage06_waiting_for_production_exit");
     const auto waitResult =
         WaitForSingleObject(process.hProcess, kProductionExitTimeoutMs);
     if (waitResult != WAIT_OBJECT_0) {
+        WriteStage((waitResult == WAIT_TIMEOUT)
+            ? L"stage06_production_exit_timeout"
+            : L"stage06_production_wait_failed");
+        StderrStage((waitResult == WAIT_TIMEOUT)
+            ? L"stage06_production_exit_timeout"
+            : L"stage06_production_wait_failed");
         (void)TerminateProcess(process.hProcess, 253);
         const DWORD terminated = WaitForSingleObject(
             process.hProcess, kProductionTerminateJoinTimeoutMs);
@@ -319,10 +536,17 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
         return PrintFailure(waitResult == WAIT_TIMEOUT
             ? "production-exit-timeout" : "production-wait-failed");
     }
+    WriteStage(L"stage07_production_exited_clean");
     DWORD childExit = 0;
     const bool gotExit = GetExitCodeProcess(process.hProcess, &childExit) != 0;
     CloseHandle(process.hProcess);
     if (!gotExit || childExit != 0) {
+        WriteStage((childExit == 259)
+            ? L"stage08_production_exit_code_259"
+            : L"stage08_production_exit_nonzero");
+        StderrStage((childExit == 259)
+            ? L"stage08_production_exit_code_259"
+            : L"stage08_production_exit_nonzero");
         return PrintFailure("production-exit-nonzero");
     }
 
@@ -345,5 +569,6 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
             static_cast<DWORD>(sizeof(kRestoredEvidence) - 1U), writeError)) {
         return PrintWin32Failure("restored-evidence-write-failed", writeError);
     }
+    WriteStage(L"stage09_console_state_restored_emitted");
     return 0;
 }

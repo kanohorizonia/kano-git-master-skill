@@ -29,12 +29,44 @@
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/terminal.hpp>
 
+namespace {
+
+// KOG-BUG-0146: bounded test-only stage-trace file writer.  Uses only
+// standard C stdio so this translation unit does not have to pull in
+// <windows.h> (which would conflict with the rest of the file's
+// cross-platform includes).  Opt-in: the helper is a no-op unless
+// KOG_TEST_MODE=1 AND KOG_TUI_TEST_DIAG_LOG point at a writable file
+// path.  Normal operator runs never read the env vars, so production
+// semantics are unchanged.
+void WriteKogBug0146Diag(const char* InMessage) {
+    if (InMessage == nullptr) {
+        return;
+    }
+    const char* testMode = std::getenv("KOG_TEST_MODE");
+    if (testMode == nullptr || testMode[0] != '1' || testMode[1] != '\0') {
+        return;
+    }
+    const char* path = std::getenv("KOG_TUI_TEST_DIAG_LOG");
+    if (path == nullptr || *path == '\0') {
+        return;
+    }
+    std::FILE* file = std::fopen(path, "a");
+    if (file == nullptr) {
+        return;
+    }
+    std::fprintf(file, "%s\n", InMessage);
+    std::fclose(file);
+}
+
+}  // namespace
+
 #include <algorithm>
 #include <atomic>
 #include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -148,6 +180,7 @@ auto BuildTuiDiscoveryGitExecutionControl()
                     *probeControl,
                     InArguments);
             };
+        control.cancellationObserver = probeControl->isCancelled;
     }
     return control;
 }
@@ -660,12 +693,17 @@ auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::stri
         return {
             .exitCode = 130,
             .stderrStr = "TUI operation cancelled before Git launch",
+            .outcome = shell::ExecOutcome::Cancelled,
         };
     }
+    const auto cancellationObserver = GActiveTuiProbeControl != nullptr
+        ? GActiveTuiProbeControl->isCancelled
+        : shell::CancellationObserver{};
     return shell::ExecuteCommand("git", InArgs, shell::ExecMode::Capture, InRepo,
-                                 shell::ProgressCallback{},
-                                 kTuiInteractiveReadTimeoutMs,
-                                 shell::CaptureLimits{InMaxBytes, InMaxBytes});
+                                  shell::ProgressCallback{},
+                                  kTuiInteractiveReadTimeoutMs,
+                                  shell::CaptureLimits{InMaxBytes, InMaxBytes},
+                                  cancellationObserver);
 }
 
 auto GitCaptureInteractiveRead(const std::filesystem::path& InRepo,
@@ -675,8 +713,12 @@ auto GitCaptureInteractiveRead(const std::filesystem::path& InRepo,
         return {
             .exitCode = 130,
             .stderrStr = "TUI operation cancelled before Git launch",
+            .outcome = shell::ExecOutcome::Cancelled,
         };
     }
+    const auto cancellationObserver = GActiveTuiProbeControl != nullptr
+        ? GActiveTuiProbeControl->isCancelled
+        : shell::CancellationObserver{};
     return shell::ExecuteCommand(
         "git",
         InArgs,
@@ -684,7 +726,8 @@ auto GitCaptureInteractiveRead(const std::filesystem::path& InRepo,
         InRepo,
         shell::ProgressCallback{},
         kTuiInteractiveReadTimeoutMs,
-        shell::CaptureLimits{kTuiStatusMaxBytes, kTuiStatusMaxBytes});
+        shell::CaptureLimits{kTuiStatusMaxBytes, kTuiStatusMaxBytes},
+        cancellationObserver);
 }
 
 auto CurrentBranch(const std::filesystem::path& InRepo) -> std::string {
@@ -2417,10 +2460,14 @@ auto BuildDiscoverLines(const std::vector<RepoView>& repos, const std::filesyste
 auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int {
     using namespace ftxui;
 
+    // KOG-BUG-0146: test-only stage checkpoint.
+    WriteKogBug0146Diag("diag=run_ftxui_dashboard_entered");
+
     // This is the earliest shared interactive runner seam.  Keep rejected
     // invocations out of all terminal mutation, including guard capture,
     // code-page setup, FTXUI construction, and fullscreen/ANSI entry.
     auto terminalSession = StartTuiTerminalSession();
+    WriteKogBug0146Diag("diag=start_tui_terminal_session_returned");
     if (!terminalSession.preflight.Accepted()) {
         std::cerr << "kog tui: "
                   << DescribeTuiTerminalPreflightFailure(
@@ -2428,6 +2475,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                   << "\n";
         return 3;
     }
+    WriteKogBug0146Diag("diag=preflight_accepted");
 
 #ifdef KOG_PLATFORM_WINDOWS
     // Ensure the Windows console interprets subprocess output as UTF-8.
@@ -2876,12 +2924,12 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
         asyncCancelRequested.store(false);
         asyncWorker = std::thread(
             [&, InWorkerBody, generation, InLabel, bInCancellable]() {
-            const TuiGitProbeControl workerProbeControl{
-                .isCancelled = [&, bInCancellable]() {
-                    return bInCancellable &&
-                        asyncCancelRequested.load();
-                },
-            };
+            TuiGitProbeControl workerProbeControl;
+            if (bInCancellable) {
+                workerProbeControl.isCancelled = [&]() {
+                    return asyncCancelRequested.load();
+                };
+            }
             const ScopedTuiGitProbeControl scopedProbeControl{
                 workerProbeControl};
             try {
@@ -2961,6 +3009,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     const std::uint64_t InGeneration) {
                     auto batch = asyncCancelRequested.load()
                         ? HistoryBatchResult{
+                              .cancelled = true,
                               .errorMessage = "history load cancelled",
                           }
                         : FetchTuiHistoryBatch(
@@ -2975,6 +3024,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                               });
                     if (asyncCancelRequested.load()) {
                         batch.entries.clear();
+                        batch.cancelled = true;
                         batch.errorMessage = "history load cancelled";
                     }
                     std::lock_guard<std::mutex> lock(asyncMu);
@@ -2986,6 +3036,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     asyncState.refreshHistory = true;
                     asyncState.historyRepoKey = key;
                     asyncState.historyPageIndex = PageIndex;
+                    asyncState.cancelled = batch.cancelled;
                     asyncState.historyBatch = std::move(batch);
                     asyncState.hasResult = true;
                     asyncState.completionFooter =
@@ -3077,6 +3128,9 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     asyncState.historyDetailKey = detailKey;
                     asyncState.historyDetailOverlay = std::move(overlay);
                     asyncState.historyDetailError = std::move(error);
+                    asyncState.cancelled =
+                        !asyncState.historyDetailError.empty() &&
+                        asyncCancelRequested.load();
                     asyncState.hasResult = true;
                     asyncState.completionFooter =
                         asyncState.historyDetailError.empty()
@@ -3189,6 +3243,8 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     shell::CaptureLimits{
                         kTuiStatusMaxBytes,
                         kTuiStatusMaxBytes});
+                const auto processCompletion =
+                    ClassifyTuiAsyncProcessResult(result);
                 std::string body = "repo: " + InRepo.lexically_normal().generic_string() + "\n"
                     + "scope: " + InScopeLabel + "\n"
                     + "command: " + InCommandText + "\n"
@@ -3199,7 +3255,9 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                         "\n\n... output truncated at the TUI audit budget";
                 }
                 std::optional<RepoView> refreshedRow;
-                if (result.exitCode == 0 && repoSnapshot.has_value()) {
+                if (processCompletion ==
+                        TuiAsyncProcessCompletion::Completed &&
+                    repoSnapshot.has_value()) {
                     refreshedRow = BuildLiveRepoView(workspaceRoot, *repoSnapshot);
                 }
                 std::lock_guard<std::mutex> lock(asyncMu);
@@ -3212,16 +3270,27 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 asyncState.previewTitle = InLabel + " result";
                 asyncState.previewBody = std::move(body);
                 asyncState.hasResult = true;
-                asyncState.completionFooter = result.exitCode == 0 ? "command finished" : "command failed";
+                asyncState.completionFooter = processCompletion ==
+                        TuiAsyncProcessCompletion::Completed
+                    ? "command finished"
+                    : (processCompletion ==
+                               TuiAsyncProcessCompletion::Cancelled
+                           ? "command cancelled"
+                           : "command failed");
                 if (refreshedRow.has_value()) {
                     asyncState.refreshSelectedRepo = true;
                     asyncState.refreshedRepo = std::move(*refreshedRow);
                     asyncState.refreshedRepoKey = repoKey;
                     asyncState.completionFooter = "repo refreshed: " + repoDisplay;
                 }
-                if (result.exitCode != 0) {
+                if (processCompletion !=
+                    TuiAsyncProcessCompletion::Completed) {
                     asyncState.hasError = true;
-                    asyncState.errorMessage = "command failed";
+                    asyncState.cancelled = processCompletion ==
+                        TuiAsyncProcessCompletion::Cancelled;
+                    asyncState.errorMessage = asyncState.cancelled
+                        ? "command cancelled"
+                        : "command failed";
                 }
             }, InAuditVerification.has_value(), bInMutating)) {
             preview.active = false;
@@ -3387,6 +3456,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                         return;
                     }
                     asyncState.hasError = true;
+                    asyncState.cancelled = asyncCancelRequested.load();
                     asyncState.errorMessage = std::string("repo refresh failed: ") + e.what();
                 }
             }, true)) {
@@ -3777,6 +3847,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                         return;
                     }
                     asyncState.hasError = true;
+                    asyncState.cancelled = asyncCancelRequested.load();
                     asyncState.errorMessage = std::string("discover failed: ") + e.what();
                 }
             }, true)) {
@@ -4016,16 +4087,12 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                                     auto& batch =
                                         asyncState.historyBatch;
                                     if (!batch.errorMessage.empty()) {
-                                        const bool cancelled =
-                                            batch.errorMessage.find(
-                                                "cancelled") !=
-                                            std::string::npos;
                                         (void)FailTuiLoad(
                                             cache.loadState,
                                             completedGeneration,
                                             batch.errorMessage,
-                                            cancelled);
-                                        if (!cancelled) {
+                                            batch.cancelled);
+                                        if (!batch.cancelled) {
                                             cache.loadError =
                                                 batch.errorMessage;
                                             cache.fullyLoaded = true;
@@ -4095,9 +4162,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                                         history.detailLoadState,
                                         completedGeneration,
                                         asyncState.historyDetailError,
-                                        asyncState.historyDetailError.find(
-                                            "cancelled") !=
-                                            std::string::npos);
+                                        asyncState.cancelled);
                                 }
                                 if (history
                                             .detailPendingGeneration ==
@@ -4199,9 +4264,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                                     history.detailLoadState,
                                     completedGeneration,
                                     asyncState.errorMessage,
-                                    asyncState.errorMessage.find(
-                                        "cancelled") !=
-                                        std::string::npos);
+                                    asyncState.cancelled);
                                 if (completion
                                         .bPresentSurface) {
                                     history.detailError =
@@ -4217,9 +4280,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                                     discover.loadState,
                                     completedGeneration,
                                     asyncState.errorMessage,
-                                    asyncState.errorMessage.find(
-                                        "cancelled") !=
-                                        std::string::npos);
+                                    asyncState.cancelled);
                             } else if (
                                 completedSurface ==
                                     TuiAsyncSurface::Preview &&
@@ -6691,6 +6752,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
     });
 
     screen.Loop(ui);
+    WriteKogBug0146Diag("diag=screen_loop_returned");
     finish_async_operation();
     std::cout << "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l" << std::flush;
     return 0;

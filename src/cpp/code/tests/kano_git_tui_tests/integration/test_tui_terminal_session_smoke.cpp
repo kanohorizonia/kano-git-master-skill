@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <mutex>
 #include <optional>
@@ -1002,7 +1003,10 @@ class WindowsConPtyHostController final {
         const std::filesystem::path& InWrapper,
         const std::filesystem::path& InProduction,
         const bool bInEscape,
-        const bool bInStallBeforeClose)
+        const bool bInStallBeforeClose,
+        const bool bInQAfterMarkerMode = false,
+        const std::wstring& InQAfterMarkerFile = {},
+        const std::wstring& InQAfterMarkerKick = L"r")
         : deadline_(std::chrono::steady_clock::now() + kTerminalDeadline) {
         WindowsHostLaunchResources resources;
         resources.deadline = deadline_;
@@ -1060,6 +1064,18 @@ class WindowsConPtyHostController final {
             QuoteWindowsArgument(InWrapper.wstring()) + L" " +
             QuoteWindowsArgument(InProduction.wstring());
         if (bInStallBeforeClose) command += L" --test-stall-before-close";
+        if (bInQAfterMarkerMode) {
+            REQUIRE_FALSE(InQAfterMarkerFile.empty());
+            command += L" --test-q-after-marker ";
+            command += QuoteWindowsArgument(InQAfterMarkerFile);
+            // Default kick byte is 'r' (production TUI's :refresh shortcut),
+            // which kicks a real git launch through the fake git.  Tests
+            // that do not want a kick can pass an empty wstring here.
+            if (!InQAfterMarkerKick.empty()) {
+                command += L" ";
+                command += QuoteWindowsArgument(InQAfterMarkerKick);
+            }
+        }
         PROCESS_INFORMATION process{};
         REQUIRE(CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
             CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
@@ -1330,6 +1346,307 @@ TEST_CASE(
     CHECK(outcome == WindowsHostOutcome::KilledAtBeforeClose);
     CHECK_FALSE(controller.Status().find(kWindowsHostSuccess) != std::string::npos);
     CHECK(controller.JobIsEmpty());
+}
+
+// KOG-BUG-0107: out-of-process helpers used by the q/Esc cancellation
+// tests below.  These mirror the fixture builders from
+// kog-bug-0109's live-resize evidence helper set so the new tests do
+// not depend on a separate helper header.
+class ScopedWindowsSandbox final {
+  public:
+    explicit ScopedWindowsSandbox(std::string InName)
+        : context_(
+              kano::git::tests::functional::CreateSandboxWorkspace(
+                  std::move(InName))) {}
+
+    ~ScopedWindowsSandbox() {
+        kano::git::tests::functional::RemoveSandboxWorkspace(context_);
+    }
+
+    ScopedWindowsSandbox(const ScopedWindowsSandbox&) = delete;
+    auto operator=(const ScopedWindowsSandbox&)
+        -> ScopedWindowsSandbox& = delete;
+
+    [[nodiscard]] auto Root() const -> const std::filesystem::path& {
+        return context_.root;
+    }
+
+  private:
+    kano::git::tests::functional::SandboxContext context_;
+};
+
+class ScopedWindowsCurrentDirectory final {
+  public:
+    explicit ScopedWindowsCurrentDirectory(
+        const std::filesystem::path& InCurrent)
+        : previous_(std::filesystem::current_path()) {
+        std::filesystem::current_path(InCurrent);
+    }
+
+    ~ScopedWindowsCurrentDirectory() {
+        std::error_code ignored;
+        std::filesystem::current_path(previous_, ignored);
+    }
+
+    ScopedWindowsCurrentDirectory(const ScopedWindowsCurrentDirectory&) = delete;
+    auto operator=(const ScopedWindowsCurrentDirectory&)
+        -> ScopedWindowsCurrentDirectory& = delete;
+
+  private:
+    std::filesystem::path previous_;
+};
+
+auto RequireWindowsCommandSuccess(
+    const kano::git::tests::functional::CommandResult& InResult,
+    const std::string_view InContext) -> void {
+    INFO(std::string(InContext));
+    INFO("exit=" << InResult.exitCode);
+    INFO("stdout=" << InResult.stdoutText);
+    INFO("stderr=" << InResult.stderrText);
+    REQUIRE(InResult.exitCode == 0);
+}
+
+auto WriteWindowsFixtureFile(
+    const std::filesystem::path& InPath,
+    const std::string_view InText) -> void {
+    std::filesystem::create_directories(InPath.parent_path());
+    std::ofstream stream(InPath, std::ios::binary | std::ios::trunc);
+    REQUIRE(stream.good());
+    stream.write(InText.data(), static_cast<std::streamsize>(InText.size()));
+    REQUIRE(stream.good());
+}
+
+auto WindowsUtf8PathText(const std::filesystem::path& InPath) -> std::string {
+#if defined(_WIN32)
+    const auto value = InPath.generic_u8string();
+    return {value.begin(), value.end()};
+#else
+    return InPath.generic_string();
+#endif
+}
+
+auto InitializeWindowsFixtureRepository(
+    const std::filesystem::path& InRepository) -> void {
+    using namespace kano::git::tests::functional;
+    std::filesystem::create_directories(InRepository);
+    RequireWindowsCommandSuccess(
+        RunGit({"init", "."}, InRepository),
+        "initialize KOG-BUG-0107 q-cancel repository");
+    RequireWindowsCommandSuccess(
+        RunGit({"config", "user.name", "KOG TUI Cancel Test"}, InRepository),
+        "configure KOG-BUG-0107 q-cancel repository user name");
+    RequireWindowsCommandSuccess(
+        RunGit({"config", "user.email", "kog-tui-cancel@example.invalid"},
+            InRepository),
+        "configure KOG-BUG-0107 q-cancel repository user email");
+    WriteWindowsFixtureFile(
+        InRepository / "README.md",
+        "KOG-BUG-0107 q/Esc cancellation fixture\n");
+    RequireWindowsCommandSuccess(
+        RunGit({"add", "README.md"}, InRepository),
+        "stage KOG-BUG-0107 q-cancel repository fixture");
+    RequireWindowsCommandSuccess(
+        RunGit({"commit", "-m", "seed KOG-BUG-0107 q-cancel repository"},
+            InRepository),
+        "commit KOG-BUG-0107 q-cancel repository fixture");
+}
+
+// KOG-BUG-0107: the production TUI's startup-cancel-ack harness proves that
+// q/Esc is processed BEFORE git is launched.  This test proves the
+// remaining half of the contract: that q/Esc cancels an owned subprocess
+// tree that is ALREADY RUNNING when q/Esc arrives.
+//
+// Mechanism:
+//   1.  A real workspace is created so the production TUI's startup
+//       inventory has work to do.
+//   2.  A fake `git` (git.cmd on Windows) is created in a sandbox
+//       bin directory.  When invoked it writes a marker file the host
+//       polls for, then blocks for 30 s.
+//   3.  The fake bin directory is prepended to PATH so the production
+//       TUI's git subprocess finds the fake git before the real git.
+//   4.  The ConPTY host is launched in --test-q-after-marker mode with
+//       the marker path as the q-trigger.  --test-q-after-marker
+//       bypasses the startup cancel-ack harness so the production TUI
+//       proceeds to launch git and the fake git blocks.
+//   5.  The host polls the marker file.  When present, the host sends
+//       q/Esc.  The production TUI's q/Esc handler triggers
+//       asyncCancelRequested and the shell-layer cancellation observer
+//       terminates the owned fake-git subprocess tree via the existing
+//       Job Object path.
+//   6.  The bounded deadline proves cancellation latency: q/Esc must
+//       terminate the still-running fake git well before its 30 s
+//       sleep completes.  JobIsEmpty proves the Job Object owned the
+//       fake git and the Job Object cleanup emptied the tree.
+TEST_CASE(
+    "q cancels an in-flight owned git subprocess and restores terminal",
+    "[integration][tui_terminal_session][production-path][tui_pr_focus][KOG-BUG-0107]") {
+    const ScopedWindowsSandbox sandbox("kog-bug-0107-q-cancel-active-git");
+
+    // KOG-BUG-0107 round 5: stage-checkpoint log file.  The wrapper writes
+    // 'stage=N<tab>pid=<pid>...' lines to this path so the test can
+    // determine exactly how far the production launch reached before any
+    // failure.  Read this file after WindowsConPtyHostController.Run()
+    // returns and report it via INFO + REQUIREs.
+    const auto stageLogPath = (sandbox.Root() / "stage-log.txt")
+        .lexically_normal().generic_string();
+    const ScopedWindowsEnvironment stageLogEnv(
+        "KOG_TUI_TEST_STAGE_LOG", stageLogPath.c_str());
+    // KOG-BUG-0146: also enable the production-TUI SEH stage-trace diag so
+    // the test can localise the exit-259 production-side crash before the
+    // unattended-execution filter terminates the process.  The path is the
+    // same file as the wrapper stage log; both processes append in pid
+    // order and the test reads the combined content via the stage log.
+    const ScopedWindowsEnvironment diagLogEnv(
+        "KOG_TUI_TEST_DIAG_LOG", stageLogPath.c_str());
+
+    // Real workspace so the production TUI has something to discover.
+    const auto workspace = (sandbox.Root() / "ws").lexically_normal();
+    InitializeWindowsFixtureRepository(workspace);
+
+    // Fake git that signals via a marker file then blocks for 30 s.
+    const auto fakeBinDir = sandbox.Root() / "fake-bin";
+    std::filesystem::create_directories(fakeBinDir);
+    const auto fakeGit = fakeBinDir / "git.cmd";
+    const std::string markerPath = (sandbox.Root() / "fake-git-marker")
+        .lexically_normal().generic_string();
+    std::ofstream fakeScript(fakeGit, std::ios::binary | std::ios::trunc);
+    REQUIRE(fakeScript.good());
+    fakeScript <<
+        "@echo off\r\n"
+        "echo KOG_FAKE_GIT_READY > \"" << markerPath << "\"\r\n"
+        "ping -n 30 127.0.0.1 > nul\r\n";
+    fakeScript.close();
+    REQUIRE(std::filesystem::exists(fakeGit));
+
+    // Prepend the fake bin directory to PATH so the production TUI's
+    // git subprocess picks up our fake.  ScopedWindowsEnvironment
+    // restores the original on destruction.
+    char originalPath[32767]{};
+    const DWORD pathLength = GetEnvironmentVariableA(
+        "PATH", originalPath, sizeof(originalPath));
+    REQUIRE(pathLength > 0U);
+    REQUIRE(pathLength < sizeof(originalPath));
+    const std::string newPath = fakeBinDir.string() + ";" +
+        std::string(originalPath);
+    const ScopedWindowsEnvironment fakeGitPath("PATH", newPath.c_str());
+    const ScopedWindowsEnvironment testMode("KOG_TEST_MODE", "1");
+    // Set cwd to the workspace so the production TUI's
+    // workspaceRoot = current_path() resolves to the test's real
+    // git workspace and git discovery reaches the fake-git.
+    const ScopedWindowsCurrentDirectory currentDirectory(workspace);
+    // Deliberately do NOT set KOG_TUI_TEST_STARTUP_CANCEL_ACK: the
+    // production TUI must proceed past the startup harness and into
+    // the actual git launch.
+
+    // Ensure the marker file does not exist before the test runs.
+    std::error_code removeError;
+    std::filesystem::remove(markerPath, removeError);
+
+    const auto binaries =
+        kano::git::tests::functional::ResolveKogBinaryPath().parent_path();
+    // Wide-string form for the conpty host argument list.
+    const std::wstring wideMarker = std::wstring(
+        markerPath.begin(), markerPath.end());
+    WindowsConPtyHostController controller(
+        binaries / "kano_git_tui_conpty_host.exe",
+        binaries / "kano_git_tui_terminal_state_wrapper.exe",
+        StandaloneTuiBinary(),
+        /* bInEscape = */ false,
+        /* bInStallBeforeClose = */ false,
+        /* qAfterMarkerMode = */ true,
+        wideMarker);
+    const auto outcome = controller.Run(false);
+    const auto transcript = controller.Transcript();
+    INFO("bounded ConPTY transcript: total=" << controller.TranscriptTotalBytes()
+         << "; omitted=" << controller.TranscriptOmittedBytes()
+         << "\n" << transcript
+         << "\nhost status:\n" << controller.Status());
+    REQUIRE(outcome == WindowsHostOutcome::Success);
+    CHECK(controller.JobIsEmpty());
+    // The fake git must have been invoked: marker file must exist on
+    // disk.  It was either deleted by the Job Object cleanup or
+    // survives; either way, existence proves the production TUI did
+    // actually spawn the fake git and the test wasn't a no-op.
+    CHECK(std::filesystem::exists(markerPath));
+    // The fake git must have been killed by q/Esc, not by waiting for
+    // its own 30 s sleep to elapse.  The host enforces a bounded
+    // deadline; if cancellation had not propagated, the controller
+    // would have failed with a deadline exit, not Success.
+    CHECK(controller.Status().find(kWindowsHostSuccess) != std::string::npos);
+}
+
+TEST_CASE(
+    "Escape cancels an in-flight owned git subprocess and restores terminal",
+    "[integration][tui_terminal_session][production-path][tui_pr_focus][KOG-BUG-0107]") {
+    const ScopedWindowsSandbox sandbox(
+        "kog-bug-0107-escape-cancel-active-git");
+    const auto stageLogPath = (sandbox.Root() / "stage-log.txt")
+        .lexically_normal().generic_string();
+    const ScopedWindowsEnvironment stageLogEnv(
+        "KOG_TUI_TEST_STAGE_LOG", stageLogPath.c_str());
+    // KOG-BUG-0146: also enable the production-TUI SEH stage-trace diag
+    // (see the q test case for the full rationale).
+    const ScopedWindowsEnvironment diagLogEnv(
+        "KOG_TUI_TEST_DIAG_LOG", stageLogPath.c_str());
+    const auto workspace = (sandbox.Root() / "ws").lexically_normal();
+    InitializeWindowsFixtureRepository(workspace);
+
+    const auto fakeBinDir = sandbox.Root() / "fake-bin";
+    std::filesystem::create_directories(fakeBinDir);
+    const auto fakeGit = fakeBinDir / "git.cmd";
+    const std::string markerPath = (sandbox.Root() / "fake-git-marker")
+        .lexically_normal().generic_string();
+    std::ofstream fakeScript(fakeGit, std::ios::binary | std::ios::trunc);
+    REQUIRE(fakeScript.good());
+    fakeScript <<
+        "@echo off\r\n"
+        "echo KOG_FAKE_GIT_READY > \"" << markerPath << "\"\r\n"
+        "ping -n 30 127.0.0.1 > nul\r\n";
+    fakeScript.close();
+
+    char originalPath[32767]{};
+    const DWORD pathLength = GetEnvironmentVariableA(
+        "PATH", originalPath, sizeof(originalPath));
+    REQUIRE(pathLength > 0U);
+    REQUIRE(pathLength < sizeof(originalPath));
+    const std::string newPath = fakeBinDir.string() + ";" +
+        std::string(originalPath);
+    const ScopedWindowsEnvironment fakeGitPath("PATH", newPath.c_str());
+    const ScopedWindowsEnvironment testMode("KOG_TEST_MODE", "1");
+    const ScopedWindowsCurrentDirectory currentDirectory(workspace);
+
+    std::error_code removeError;
+    std::filesystem::remove(markerPath, removeError);
+
+    const auto binaries =
+        kano::git::tests::functional::ResolveKogBinaryPath().parent_path();
+    const std::wstring wideMarker = std::wstring(
+        markerPath.begin(), markerPath.end());
+    WindowsConPtyHostController controller(
+        binaries / "kano_git_tui_conpty_host.exe",
+        binaries / "kano_git_tui_terminal_state_wrapper.exe",
+        StandaloneTuiBinary(),
+        /* bInEscape = */ true,
+        /* bInStallBeforeClose = */ false,
+        /* qAfterMarkerMode = */ true,
+        wideMarker);
+    const auto outcome = controller.Run(false);
+    const auto transcript = controller.Transcript();
+    // KOG-BUG-0107 round 5: dump the wrapper stage-checkpoint log so a
+    // failing run tells us exactly which stage was the last one reached.
+    std::ifstream stageStream(stageLogPath, std::ios::binary);
+    std::string stageLogContent(
+        (std::istreambuf_iterator<char>(stageStream)),
+        std::istreambuf_iterator<char>());
+    INFO("bounded ConPTY transcript: total=" << controller.TranscriptTotalBytes()
+         << "; omitted=" << controller.TranscriptOmittedBytes()
+         << "\n" << transcript
+         << "\nhost status:\n" << controller.Status()
+         << "\nwrapper stage log:\n" << stageLogContent);
+    REQUIRE(outcome == WindowsHostOutcome::Success);
+    CHECK(controller.JobIsEmpty());
+    CHECK(std::filesystem::exists(markerPath));
+    CHECK(controller.Status().find(kWindowsHostSuccess) != std::string::npos);
 }
 
 #endif

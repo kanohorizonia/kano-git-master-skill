@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace kano::git::commands {
@@ -26,8 +27,9 @@ auto Trim(std::string InValue) -> std::string {
 }
 
 auto GitCapture(const std::filesystem::path& InRepo,
-                const std::vector<std::string>& InArgs,
-                const std::size_t InMaxBytes = kTuiFilePatchMaxBytes)
+                 const std::vector<std::string>& InArgs,
+                 const std::size_t InMaxBytes = kTuiFilePatchMaxBytes,
+                 shell::CancellationObserver InCancellationObserver = {})
     -> shell::ExecResult {
     constexpr unsigned int kInteractiveReadTimeoutMs = 5000;
     return shell::ExecuteCommand(
@@ -37,7 +39,8 @@ auto GitCapture(const std::filesystem::path& InRepo,
         InRepo,
         shell::ProgressCallback{},
         kInteractiveReadTimeoutMs,
-        shell::CaptureLimits{InMaxBytes, InMaxBytes});
+        shell::CaptureLimits{InMaxBytes, InMaxBytes},
+        std::move(InCancellationObserver));
 }
 
 auto IsCancelled(const TuiGitProbeControl& InControl) -> bool {
@@ -52,7 +55,15 @@ auto ControlledGitCapture(const std::filesystem::path& InRepo,
     if (!TryBeginTuiGitProbe(InControl, InArgs)) {
         return std::nullopt;
     }
-    return GitCapture(InRepo, InArgs, InMaxBytes);
+    auto result = GitCapture(
+        InRepo,
+        InArgs,
+        InMaxBytes,
+        InControl.isCancelled);
+    if (result.outcome == shell::ExecOutcome::Cancelled) {
+        return std::nullopt;
+    }
+    return result;
 }
 
 auto TruncateFilePatch(std::string InBody,

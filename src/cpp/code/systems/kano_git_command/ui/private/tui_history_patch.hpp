@@ -68,8 +68,10 @@ struct HistoryNameStatusParseResult {
 
 /// Optional cancellation and launch observation for a bounded sequence of Git
 /// probes. `isCancelled` is checked immediately before every subprocess
-/// launch. `onLaunch` exists so deterministic tests can prove that no later
-/// probe starts after cancellation.
+/// launch and is forwarded to explicitly cancellable subprocess waits so an
+/// already-running owned tree can stop promptly. `onLaunch` exists so
+/// deterministic tests can prove that no later probe starts after
+/// cancellation.
 struct TuiGitProbeControl {
     std::function<bool()> isCancelled;
     std::function<void(const std::vector<std::string>&)> onLaunch;

@@ -9,6 +9,7 @@
 namespace kano::git::shell {
 
 enum class ExecMode { Capture, PassThrough };
+enum class ExecOutcome { Completed, Cancelled, TimedOut };
 
 struct ExecResult {
     int exitCode = 0;
@@ -16,6 +17,7 @@ struct ExecResult {
     std::string stderrStr;  // Binary-safe; may contain embedded NUL bytes.
     bool stdoutTruncated = false;
     bool stderrTruncated = false;
+    ExecOutcome outcome = ExecOutcome::Completed;
 };
 
 struct CaptureLimits {
@@ -24,6 +26,7 @@ struct CaptureLimits {
 };
 
 using ProgressCallback = std::function<void(std::string_view chunk, bool isStderr)>;
+using CancellationObserver = std::function<bool()>;
 
 struct CommandLogCallbacks {
     std::function<void(const std::string&)> onStdout;
@@ -77,7 +80,8 @@ auto ExecuteCommand(
     std::optional<std::filesystem::path> InWorkingDir,
     ProgressCallback InProgressCallback,
     std::optional<unsigned int> InTimeoutOverrideMs = std::nullopt,
-    CaptureLimits InCaptureLimits = {}
+    CaptureLimits InCaptureLimits = {},
+    CancellationObserver InCancellationObserver = {}
 ) -> ExecResult;
 
 }
