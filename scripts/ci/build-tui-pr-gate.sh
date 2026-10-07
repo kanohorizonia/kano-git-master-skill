@@ -53,13 +53,21 @@ echo "[build-tui-pr-gate] build preset=$BUILD_PRESET"
 echo "[build-tui-pr-gate] CPP_ROOT=$CPP_ROOT"
 echo "[build-tui-pr-gate] BUILD_DIR=$BUILD_DIR"
 
+# The CMakePresets.json is at $CPP_ROOT/CMakePresets.json.  cmake --preset
+# looks in the current working directory, not in -S.  `cd` into CPP_ROOT
+# so the preset is found at ./CMakePresets.json.
+cd "$CPP_ROOT" || {
+    echo "failed to cd to CPP_ROOT=$CPP_ROOT" >&2
+    exit 2
+}
+
 # Configure.  The pixi env from the previous "Install locked shared-infra
 # environment" step already added cmake and ninja to PATH.
 # Note: cmake presets are selected via --preset, NOT -C.  The -C flag
 # is the initial-cache flag and would treat the preset name as a file
 # path (which is the TUI PR Gates run 37514004402 symptom on all three
 # platforms: "CMake Error: Not a file: ...linux-ninja-clang").
-cmake -S "$CPP_ROOT" -B "$BUILD_DIR" --preset "$CONFIGURE_PRESET"
+cmake -S . -B "$BUILD_DIR" --preset "$CONFIGURE_PRESET"
 
 # Build.  The artifact target matches what run_tui_pr_focus.py expects.
 cmake --build "$BUILD_DIR" --preset "$BUILD_PRESET" \
