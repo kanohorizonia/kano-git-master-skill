@@ -45,34 +45,39 @@ if [[ ! -f "$CPP_ROOT/CMakePresets.json" ]]; then
     exit 2
 fi
 
-BUILD_DIR="$REPO_ROOT/src/cpp/out/ci-tui-pr-gate"
-mkdir -p "$BUILD_DIR"
+# Derive the build directory from the configure preset name.  Each preset
+# in src/cpp/CMakePresets.json sets binaryDir to ${sourceDir}/out/obj/<suffix>,
+# and the workflow's FetchContent cache restore step (step 6) restores the
+# cache to out/obj/<suffix>/_deps/.  Overriding binaryDir with -B
+# causes "could not load cache" — TUI PR Gates run 37552993143.
+# So we let the preset determine binaryDir and derive the same path here.
+case "$CONFIGURE_PRESET" in
+    linux-ninja-clang)         BUILD_DIR="$CPP_ROOT/out/obj/linux-ninja-clang" ;;
+    linux-ninja-gcc)           BUILD_DIR="$CPP_ROOT/out/obj/linux-ninja-gcc" ;;
+    linux-ninja-gcc-tsan)      BUILD_DIR="$CPP_ROOT/out/obj/linux-ninja-gcc-tsan" ;;
+    macos-ninja-clang-arm64)   BUILD_DIR="$CPP_ROOT/out/obj/macos-ninja-clang-arm64" ;;
+    macos-ninja-clang)         BUILD_DIR="$CPP_ROOT/out/obj/macos-ninja-clang" ;;
+    windows-ninja-msvc)        BUILD_DIR="$CPP_ROOT/out/obj/windows-ninja-msvc" ;;
+    windows-ninja-clang)       BUILD_DIR="$CPP_ROOT/out/obj/windows-ninja-clang" ;;
+    windows-msbuild)           BUILD_DIR="$CPP_ROOT/out/obj/windows-msbuild" ;;
+    *)                          BUILD_DIR="$CPP_ROOT/out/obj/ci-tui-pr-gate" ;;
+esac
 
 echo "[build-tui-pr-gate] configure preset=$CONFIGURE_PRESET"
 echo "[build-tui-pr-gate] build preset=$BUILD_PRESET"
 echo "[build-tui-pr-gate] CPP_ROOT=$CPP_ROOT"
 echo "[build-tui-pr-gate] BUILD_DIR=$BUILD_DIR"
 
-# The CMakePresets.json is at $CPP_ROOT/CMakePresets.json.  cmake --preset
-# looks in the current working directory, not in -S.  `cd` into CPP_ROOT
-# so the preset is found at ./CMakePresets.json.
+# cmake --preset reads CMakePresets.json from the current working directory,
+# not from -S.  cd into CPP_ROOT so the preset is found at ./CMakePresets.json.
 cd "$CPP_ROOT" || {
     echo "failed to cd to CPP_ROOT=$CPP_ROOT" >&2
     exit 2
 }
 
-# Wipe any stale build dir cache.  The TUI PR Gates run 37549670020
-# Linux symptom was "Error: could not load cache" because the build
-# dir survived from a previous run with a different preset.
-rm -rf "$BUILD_DIR"
-
-# Configure.  The pixi env from the previous "Install locked shared-infra
-# environment" step already added cmake and ninja to PATH.
-# Note: cmake presets are selected via --preset, NOT -C.  The -C flag
-# is the initial-cache flag and would treat the preset name as a file
-# path (which is the TUI PR Gates run 37514004402 symptom on all three
-# platforms: "CMake Error: Not a file: ...linux-ninja-clang").
-cmake -S . -B "$BUILD_DIR" --preset "$CONFIGURE_PRESET"
+# Configure WITHOUT -B so the preset's binaryDir is honoured and the
+# FetchContent cache restored to out/obj/<suffix>/_deps/ is found.
+cmake --preset "$CONFIGURE_PRESET"
 
 # Build.  The artifact target matches what run_tui_pr_focus.py expects.
 cmake --build "$BUILD_DIR" --preset "$BUILD_PRESET" \
