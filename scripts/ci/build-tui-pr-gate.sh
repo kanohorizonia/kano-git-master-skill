@@ -61,6 +61,11 @@ cd "$CPP_ROOT" || {
     exit 2
 }
 
+# Wipe any stale build dir cache.  The TUI PR Gates run 37549670020
+# Linux symptom was "Error: could not load cache" because the build
+# dir survived from a previous run with a different preset.
+rm -rf "$BUILD_DIR"
+
 # Configure.  The pixi env from the previous "Install locked shared-infra
 # environment" step already added cmake and ninja to PATH.
 # Note: cmake presets are selected via --preset, NOT -C.  The -C flag
