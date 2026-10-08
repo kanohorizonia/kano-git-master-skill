@@ -9,7 +9,8 @@
 #
 # This entrypoint is:
 #   * stable: same script on Linux, macos, Windows runners
-#   * re-entrant: no `source` of watchdog/bootstrap helpers
+#   * re-entrant: does NOT source the watchdog/bootstrap helpers;
+#     `exec`s the matrix-resolved platform-specific build script instead
 #   * no-op re-entry guard: safe to call from any CI step context
 #   * bounded: returns the build's own exit code verbatim
 #
@@ -19,6 +20,18 @@
 # Environment (set by the workflow before invocation):
 #   KANO_CPP_ROOT  : path to src/cpp (workspace-relative)
 #   PATH           : must include cmake (added by pixi install step 7)
+#
+# P1 history:
+#   r1..r3: direct `cmake --preset` + `cmake --build` from this script
+#           produced test binaries at out/obj/<preset>/ — not the
+#           out/bin/<preset>/release/ path that run_tui_pr_focus.py
+#           expects.  The test step ran the binary search but found
+#           nothing and exited within ~1 second (TUI PR Gates run 37750465970).
+#   r4:  use the matrix-resolved platform-specific build script
+#           (native-build.sh on linux/mac; ninja-msvc-release.sh on windows)
+#           via `exec bash`.  These scripts know how to produce the
+#           out/bin/<platform>/release layout that the TUI PR focus
+#           selector requires.
 
 set -euo pipefail
 
@@ -45,53 +58,27 @@ if [[ ! -f "$CPP_ROOT/CMakePresets.json" ]]; then
     exit 2
 fi
 
-# The configure preset names use an inconsistent binaryDir suffix convention
-# (e.g. windows-ninja-msvc -> out/obj/win-ninja-msvc; linux-ninja-clang ->
-# out/obj/linux-ninja-clang).  Hard-coding the mapping is brittle, so ask
-# cmake for the canonical binaryDir it just configured.  This is the only
-# way to stay in lock-step with the FetchContent cache path that
-# workflow step 6 restores.
 echo "[build-tui-pr-gate] configure preset=$CONFIGURE_PRESET"
 echo "[build-tui-pr-gate] build preset=$BUILD_PRESET"
 echo "[build-tui-pr-gate] CPP_ROOT=$CPP_ROOT"
 
-# cmake --preset reads CMakePresets.json from the current working directory,
-# not from -S.  cd into CPP_ROOT so the preset is found at ./CMakePresets.json.
-cd "$CPP_ROOT" || {
-    echo "failed to cd to CPP_ROOT=$CPP_ROOT" >&2
-    exit 2
-}
+# The platform-specific build scripts under src/cpp/shared/infra/scripts/platform/
+# are re-entrant executables that don't source the watchdog/bootstrap helpers.
+# They know how to lay the binaryDir at out/bin/<platform>/release where
+# run_tui_pr_focus.py expects the test binary to live.
+case "$(uname -s 2>/dev/null || true)" in
+    MINGW*|MSYS*|CYGWIN*) PLATFORM_BUILD_SCRIPT="$CPP_ROOT/shared/infra/scripts/platform/win64/ninja-msvc-release.sh" ;;
+    Darwin)                PLATFORM_BUILD_SCRIPT="$CPP_ROOT/shared/infra/scripts/platform/mac/native-build.sh" ;;
+    *)                      PLATFORM_BUILD_SCRIPT="$CPP_ROOT/shared/infra/scripts/platform/linux/native-build.sh" ;;
+esac
 
-# Parse the configure preset's binaryDir from CMakePresets.json.  The
-# preset names use an inconsistent suffix convention
-# (windows-ninja-msvc -> win-ninja-msvc; linux-ninja-clang -> linux-ninja-clang),
-# so we can't reverse-engineer the path from the preset name alone.
-# `cmake --preset ... --print-value-of=...` fails with
-# "Unknown argument --print-value-of=CMAKE_BINARY_DIR" (TUI PR Gates run
-# 37747477009), so parse the JSON directly with awk.
-BUILD_DIR="$CPP_ROOT/$(awk -v preset="$CONFIGURE_PRESET" '
-    $0 ~ "\"" preset "\"" { in_preset = 1 }
-    in_preset && /"binaryDir":/ {
-        sub(/.*"binaryDir": *"/, "")
-        sub(/".*/, "")
-        # Expand ${sourceDir} -> .
-        gsub(/\$\{sourceDir\}/, ".")
-        print; exit
-    }
-' CMakePresets.json)"
-echo "[build-tui-pr-gate] BUILD_DIR=$BUILD_DIR"
-
-if [[ -z "$BUILD_DIR" || "$BUILD_DIR" == "$CPP_ROOT/" ]]; then
-    echo "could not resolve binaryDir for preset '$CONFIGURE_PRESET'" >&2
+if [[ ! -f "$PLATFORM_BUILD_SCRIPT" ]]; then
+    echo "platform build script not found: $PLATFORM_BUILD_SCRIPT" >&2
     exit 2
 fi
 
-# Configure WITHOUT -B so the preset's binaryDir is honoured and the
-# FetchContent cache restored to out/obj/<suffix>/_deps/ is found.
-cmake --preset "$CONFIGURE_PRESET"
+echo "[build-tui-pr-gate] platform build script=$PLATFORM_BUILD_SCRIPT"
 
-# Build.  The artifact target matches what run_tui_pr_focus.py expects.
-cmake --build "$BUILD_DIR" --preset "$BUILD_PRESET" \
-    --target kog_runtime_artifact
-
-echo "[build-tui-pr-gate] build complete: $BUILD_DIR"
+# `exec` so the build script inherits our script's process slots and its
+# exit code propagates verbatim.  No `source` of watchdog/bootstrap helpers.
+exec bash "$PLATFORM_BUILD_SCRIPT" "$CONFIGURE_PRESET" "$BUILD_PRESET"
