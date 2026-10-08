@@ -62,13 +62,33 @@ cd "$CPP_ROOT" || {
     exit 2
 }
 
+# Parse the configure preset's binaryDir from CMakePresets.json.  The
+# preset names use an inconsistent suffix convention
+# (windows-ninja-msvc -> win-ninja-msvc; linux-ninja-clang -> linux-ninja-clang),
+# so we can't reverse-engineer the path from the preset name alone.
+# `cmake --preset ... --print-value-of=...` fails with
+# "Unknown argument --print-value-of=CMAKE_BINARY_DIR" (TUI PR Gates run
+# 37747477009), so parse the JSON directly with awk.
+BUILD_DIR="$CPP_ROOT/$(awk -v preset="$CONFIGURE_PRESET" '
+    $0 ~ "\"" preset "\"" { in_preset = 1 }
+    in_preset && /"binaryDir":/ {
+        sub(/.*"binaryDir": *"/, "")
+        sub(/".*/, "")
+        # Expand ${sourceDir} -> .
+        gsub(/\$\{sourceDir\}/, ".")
+        print; exit
+    }
+' CMakePresets.json)"
+echo "[build-tui-pr-gate] BUILD_DIR=$BUILD_DIR"
+
+if [[ -z "$BUILD_DIR" || "$BUILD_DIR" == "$CPP_ROOT/" ]]; then
+    echo "could not resolve binaryDir for preset '$CONFIGURE_PRESET'" >&2
+    exit 2
+fi
+
 # Configure WITHOUT -B so the preset's binaryDir is honoured and the
 # FetchContent cache restored to out/obj/<suffix>/_deps/ is found.
 cmake --preset "$CONFIGURE_PRESET"
-
-# Ask cmake for the canonical binaryDir it configured.
-BUILD_DIR="$(cmake --preset "$CONFIGURE_PRESET" --print-value-of=CMAKE_BINARY_DIR)"
-echo "[build-tui-pr-gate] BUILD_DIR=$BUILD_DIR"
 
 # Build.  The artifact target matches what run_tui_pr_focus.py expects.
 cmake --build "$BUILD_DIR" --preset "$BUILD_PRESET" \
