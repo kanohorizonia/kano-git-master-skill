@@ -1093,6 +1093,10 @@ Plan BuildPlan(const Snapshot& snapshot) {
         if (repo.dirtyKind == "CLEAN") { Add(plan.skipped, repo.id, "commit skipped: CLEAN"); continue; }
         if (repo.dirtyKind == "AHEAD_ONLY") { Add(plan.skipped, repo.id, "commit skipped: AHEAD_ONLY"); Allows(repo, "push") ? Add(plan.push, repo.id, "kog push --repos " + repo.id) : Add(plan.skipped, repo.id, "push skipped by commandPolicy.push=false"); continue; }
         if (repo.dirtyKind == "GITLINK_DIRTY_ONLY") {
+            if (UnsafeParentCanWaitForChildConverge(repo, byId)) {
+                Add(plan.skipped, repo.id, "parent pointer commit waits for child worktree converge");
+                continue;
+            }
             if (const auto blocker = ParentGitlinkPublicationBlocker(repo, byId); blocker.has_value()) {
                 Add(plan.blocked, repo.id, *blocker);
                 Add(plan.skipped, repo.id, "pointer commit waits for affected child publication");
@@ -1137,6 +1141,10 @@ Plan BuildPlan(const Snapshot& snapshot) {
             continue;
         }
         if (repo.dirtyKind == "CONTENT_AND_GITLINK_DIRTY") {
+            if (UnsafeParentCanWaitForChildConverge(repo, byId)) {
+                Add(plan.skipped, repo.id, "combined content/pointer commit waits for child worktree converge");
+                continue;
+            }
             if (const auto blocker = ParentGitlinkPublicationBlocker(repo, byId); blocker.has_value()) {
                 Add(plan.blocked, repo.id, *blocker);
                 Add(plan.skipped, repo.id, "combined content/pointer commit waits for affected child publication");
