@@ -22,5 +22,8 @@ if not defined BASH_EXE (
   exit /b 1
 )
 
+for %%I in ("%BASH_EXE%") do set "BASH_DIR=%%~dpI"
+set "PATH=%BASH_DIR%;%PATH%"
+
 "%BASH_EXE%" "%SCRIPT_DIR%kano-git" %*
 exit /b %ERRORLEVEL%
