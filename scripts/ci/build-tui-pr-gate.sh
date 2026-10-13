@@ -22,5 +22,5 @@ echo "[build-tui-pr-gate] CPP_ROOT=$CPP_ROOT"
 echo "[build-tui-pr-gate] APP_BIN_DIR=$APP_BIN_DIR"
 cd "$CPP_ROOT" || { echo "failed to cd to CPP_ROOT=$CPP_ROOT" >&2; exit 2; }
 cmake -S . -B "$APP_BIN_DIR" --preset "$CONFIGURE_PRESET"
-cmake --build "$APP_BIN_DIR" --target kog_runtime_artifact
+cmake --build "$APP_BIN_DIR" --target kano_git_cli kano_git_tui kog_runtime_artifact
 echo "[build-tui-pr-gate] build complete: $APP_BIN_DIR"
