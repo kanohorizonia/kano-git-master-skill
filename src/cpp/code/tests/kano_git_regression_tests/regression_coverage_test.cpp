@@ -493,6 +493,63 @@ TEST_CASE("repository gitlinks have exactly one nonempty gitmodules registration
   }
 }
 
+TEST_CASE("TUI PR Gates workflow invokes a stable executable build script and "
+          "forbids watchdog re-entry source",
+          "[integration][regression][workflow-contract][KOG-BUG-0146]") {
+  constexpr std::string_view kWorkflowPath =
+      ".github/workflows/tui-pr-gates.yml";
+  constexpr std::string_view kScriptPath =
+      "scripts/ci/build-tui-pr-gate.sh";
+  const auto root = RepoRoot();
+
+  const auto scriptLsResult = kano::git::shell::ExecuteCommand(
+      "git", {"ls-files", "-s", "--", std::string(kScriptPath)},
+      kano::git::shell::ExecMode::Capture, root);
+  INFO(scriptLsResult.stderrStr);
+  REQUIRE(scriptLsResult.exitCode == 0);
+
+  std::istringstream scriptRecords(scriptLsResult.stdoutStr);
+  std::string scriptRecord;
+  REQUIRE(std::getline(scriptRecords, scriptRecord));
+  std::string scriptExtraRecord;
+  REQUIRE_FALSE(std::getline(scriptRecords, scriptExtraRecord));
+
+  if (!scriptRecord.empty() && scriptRecord.back() == '\r') {
+    scriptRecord.pop_back();
+  }
+  const auto scriptTab = scriptRecord.find('\t');
+  REQUIRE(scriptTab != std::string::npos);
+  REQUIRE(scriptRecord.substr(scriptTab + 1) == std::string(kScriptPath));
+
+  std::istringstream scriptMetadata(scriptRecord.substr(0, scriptTab));
+  std::string scriptMode;
+  std::string scriptBlob;
+  std::string scriptStage;
+  REQUIRE(scriptMetadata >> scriptMode >> scriptBlob >> scriptStage);
+  REQUIRE(scriptMode == "100755");
+  REQUIRE(scriptStage == "0");
+
+  const auto workflowText = ReadText(root / kWorkflowPath);
+  REQUIRE(workflowText.find("Build release TUI binaries") != std::string::npos);
+  REQUIRE(workflowText.find("bash scripts/ci/build-tui-pr-gate.sh") !=
+          std::string::npos);
+  REQUIRE(workflowText.find("source scripts/lib/unix_preset_build.sh") ==
+          std::string::npos);
+  REQUIRE(workflowText.find("source scripts/lib/windows_preset_build.sh") ==
+          std::string::npos);
+
+  const auto scriptText = ReadText(root / kScriptPath);
+  REQUIRE(scriptText.find("scripts/lib/unix_preset_build.sh") ==
+          std::string::npos);
+  REQUIRE(scriptText.find("scripts/lib/windows_preset_build.sh") ==
+          std::string::npos);
+  REQUIRE(scriptText.find("kano_cpp_infra_watchdog_enter") ==
+          std::string::npos);
+  REQUIRE(scriptText.find("kano_pixi_bootstrap_activate") ==
+          std::string::npos);
+  REQUIRE(scriptText.find(" --preset \"$BUILD_PRESET\"") == std::string::npos);
+}
+
 TEST_CASE("audit JSONL fixtures are checked out LF-only",
           "[integration][regression][git-index-hygiene][KG-BUG-0130]") {
   constexpr std::string_view kFixturePath =
@@ -513,8 +570,8 @@ TEST_CASE("audit JSONL fixtures are checked out LF-only",
 
 TEST_CASE("dogfood incident manifest maps stable source cases without execution claims",
           "[unit][regression][coverage][KG-TSK-0052]") {
-  constexpr std::size_t kExpectedIncidentCount = 38;
-  constexpr std::size_t kExpectedLinkedCaseCount = 103;
+  constexpr std::size_t kExpectedIncidentCount = 39;
+  constexpr std::size_t kExpectedLinkedCaseCount = 104;
   const auto manifest = RepoRoot() / "assets" / "regression" / "incidents.json";
   const auto loaded = LoadCoverageManifest(manifest);
 

@@ -1242,6 +1242,27 @@
           "mapping_state": "source-linked"
         }
       ]
+    },
+    {
+      "incident_id": "KOG-BUG-0146",
+      "incident_date": "2026-10-13",
+      "root_cause": "The TUI PR Gates workflow's Build release TUI binaries step sourced scripts/lib/unix_preset_build.sh and scripts/lib/windows_preset_build.sh from within the ephemeral GitHub Actions step context. Both helpers re-entered through kano_cpp_infra_watchdog_enter and kano_pixi_bootstrap_activate, which themselves invoke the same step launcher. That double-source path caused step 8 to fail in 1 second on macos-arm64 and windows-x64.",
+      "backlog_ref": "KOG-BUG-0146",
+      "change_ref": "c18dc1aa42b6ec79d05918f3da3a5bb897b0aa2f",
+      "workflow_contracts": [
+        "ci-build-entrypoint-stability",
+        "no-watchdog-source-reentry",
+        "release-config-multi-config-ninja"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KOG-BUG-0146/stable-executable-build-entrypoint",
+          "test_name": "TUI PR Gates workflow invokes a stable executable build script and forbids watchdog re-entry source",
+          "test_file": "src/cpp/code/tests/kano_git_regression_tests/regression_coverage_test.cpp",
+          "test_kind": "integration",
+          "mapping_state": "source-linked"
+        }
+      ]
     }
   ]
 }
