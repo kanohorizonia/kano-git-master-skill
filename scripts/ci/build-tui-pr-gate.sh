@@ -7,15 +7,22 @@
 # the kano-cpp-infra watchdog and pixi bootstrap activate functions,
 # making the build step fail in 1 second on macOS and Windows.
 #
-# Contract enforced by the workflow-contract regression test
-# in src/cpp/code/tests/kano_git_regression_tests/regression_coverage_test.cpp
-# (case_id KOG-BUG-0146/stable-executable-build-entrypoint):
-#   * this script is tracked executable (100755) in the git index
-#   * it never sources the legacy preset helpers
-#   * it never calls the watchdog or bootstrap activate functions
-#   * the build command uses --config Release but never --preset
-#     (the build preset would re-configure against a different binaryDir
-#     and break FetchContent cache lookup)
+# Contracts enforced by the workflow-contract regression tests
+# in src/cpp/code/tests/kano_git_regression_tests/regression_coverage_test.cpp:
+#   case_id KOG-BUG-0146/stable-executable-build-entrypoint:
+#     * this script is tracked executable (100755) in the git index
+#     * it never sources the legacy preset helpers
+#     * it never calls the watchdog or bootstrap activate functions
+#     * the build command uses --config Release but never --preset
+#       (the build preset would re-configure against a different binaryDir
+#       and break FetchContent cache lookup)
+#   case_id KOG-BUG-0146/q-esc-acceptance-in-workflow:
+#     * the TUI PR Gates workflow must require both the q and Escape
+#       production standalone TUI acceptance tests for POSIX (linux/macos)
+#       and Windows ConPTY (windows-x64) terminal lifecycles — this
+#       script's correctness is the precondition for those tests being
+#       runnable on windows-x64 once KOG-BUG-0107's
+#       export_cmd.cpp:1059 MinGW compile error is fixed.
 #
 # See assets/regression/incidents.json (KOG-BUG-0146) for the full
 # root cause and the matching workflow contracts.
