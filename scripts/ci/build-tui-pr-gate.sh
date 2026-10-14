@@ -1,4 +1,24 @@
 #!/usr/bin/env bash
+# Stable, re-entrant TUI PR Gates build entrypoint (KOG-BUG-0146).
+#
+# This script exists because the GitHub Actions step that previously
+# sourced the legacy Unix and Windows preset build helpers from inside
+# the ephemeral step context caused a double-source re-entry through
+# the kano-cpp-infra watchdog and pixi bootstrap activate functions,
+# making the build step fail in 1 second on macOS and Windows.
+#
+# Contract enforced by the workflow-contract regression test
+# in src/cpp/code/tests/kano_git_regression_tests/regression_coverage_test.cpp
+# (case_id KOG-BUG-0146/stable-executable-build-entrypoint):
+#   * this script is tracked executable (100755) in the git index
+#   * it never sources the legacy preset helpers
+#   * it never calls the watchdog or bootstrap activate functions
+#   * the build command uses --config Release but never --preset
+#     (the build preset would re-configure against a different binaryDir
+#     and break FetchContent cache lookup)
+#
+# See assets/regression/incidents.json (KOG-BUG-0146) for the full
+# root cause and the matching workflow contracts.
 set -euo pipefail
 if [[ $# -ne 2 ]]; then
     echo "usage: build-tui-pr-gate.sh <configure_preset> <build_preset>" >&2
