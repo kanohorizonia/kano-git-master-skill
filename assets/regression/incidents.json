@@ -1261,6 +1261,13 @@
           "test_file": "src/cpp/code/tests/kano_git_regression_tests/regression_coverage_test.cpp",
           "test_kind": "integration",
           "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-BUG-0146/q-esc-acceptance-in-workflow",
+          "test_name": "TUI PR Gates workflow requires q and Esc production TUI acceptance tests for POSIX and Windows ConPTY terminal lifecycles",
+          "test_file": "src/cpp/code/tests/kano_git_regression_tests/regression_coverage_test.cpp",
+          "test_kind": "integration",
+          "mapping_state": "source-linked"
         }
       ]
     }

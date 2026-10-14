@@ -550,6 +550,47 @@ TEST_CASE("TUI PR Gates workflow invokes a stable executable build script and "
   REQUIRE(scriptText.find(" --preset \"$BUILD_PRESET\"") == std::string::npos);
 }
 
+TEST_CASE("TUI PR Gates workflow requires q and Esc production TUI acceptance "
+          "tests for POSIX and Windows ConPTY terminal lifecycles",
+          "[integration][regression][workflow-contract][KOG-BUG-0146]") {
+  // KOG-BUG-0146 P2 acceptance contract: the workflow must require both
+  // the q and Escape production standalone TUI acceptance tests, with
+  // matrix-driven substitution between POSIX (linux/macos) and Windows
+  // ConPTY (windows-x64).  These tests exercise the chain
+  // "production TUI first render → kick r → real owned fake-git →
+  // READY marker → q / Esc → CancellationObserver → Job Object kills
+  // owned child tree → result = Cancelled → pipes drain → terminal
+  // restored" — see the goal objective for KOG-BUG-0146.
+  constexpr std::string_view kWorkflowPath =
+      ".github/workflows/tui-pr-gates.yml";
+  const auto workflowText = ReadText(RepoRoot() / kWorkflowPath);
+
+  REQUIRE(workflowText.find("terminal lifecycle/q exits") != std::string::npos);
+  REQUIRE(workflowText.find("terminal lifecycle/Escape exits") !=
+          std::string::npos);
+  REQUIRE(workflowText.find("Windows ConPTY") != std::string::npos);
+  REQUIRE(workflowText.find("POSIX") != std::string::npos);
+  REQUIRE(workflowText.find("--required-tui-test") != std::string::npos);
+
+  // Both q and Escape variants of the production-TUI lifecycle test
+  // must be referenced as required, not just one.  Count the
+  // occurrences of the shared prefix used by both --required-tui-test
+  // lines and confirm it is exactly 2 (q + Escape).
+  const std::string kSharedPrefix =
+      "--required-tui-test \"production standalone TUI owns a ";
+  std::size_t occurrences = 0;
+  std::size_t searchFrom = 0;
+  while (true) {
+    const auto found = workflowText.find(kSharedPrefix, searchFrom);
+    if (found == std::string::npos) {
+      break;
+    }
+    ++occurrences;
+    searchFrom = found + kSharedPrefix.size();
+  }
+  REQUIRE(occurrences == 2);
+}
+
 TEST_CASE("audit JSONL fixtures are checked out LF-only",
           "[integration][regression][git-index-hygiene][KG-BUG-0130]") {
   constexpr std::string_view kFixturePath =
@@ -571,7 +612,7 @@ TEST_CASE("audit JSONL fixtures are checked out LF-only",
 TEST_CASE("dogfood incident manifest maps stable source cases without execution claims",
           "[unit][regression][coverage][KG-TSK-0052]") {
   constexpr std::size_t kExpectedIncidentCount = 39;
-  constexpr std::size_t kExpectedLinkedCaseCount = 104;
+  constexpr std::size_t kExpectedLinkedCaseCount = 105;
   const auto manifest = RepoRoot() / "assets" / "regression" / "incidents.json";
   const auto loaded = LoadCoverageManifest(manifest);
 
