@@ -1056,8 +1056,8 @@ auto IsPathWithinDirectory(const std::filesystem::path& InPath,
     return !relativeText.empty() && relativeText != ".." && relativeText.rfind("../", 0) != 0;
 }
 
-auto RotateRight32(std::uint32_t word, int bits) -> std::uint32_t {
-    return (word >> bits) | (word << (32 - bits));
+auto RotateRight32(std::uint32_t rotate_input, int rotate_shift) -> std::uint32_t {
+    return (rotate_input >> rotate_shift) | (rotate_input << (32 - rotate_shift));
 }
 
 auto FormatSha256State(const std::array<std::uint32_t, 8>& InState) -> std::string {
