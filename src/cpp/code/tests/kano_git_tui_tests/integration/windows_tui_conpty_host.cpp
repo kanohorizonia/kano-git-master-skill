@@ -247,7 +247,7 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
                 return PrintResult(false, code, win32, childExit, outputEof);
             }
             const wchar_t kick = InArguments[6][0];
-            if (kick == L'\\0' || kick > 0x7F) {
+            if (kick == L'\0' || kick > 0x7F) {
                 return PrintResult(false, code, win32, childExit, outputEof);
             }
             qAfterMarkerKick = static_cast<char>(kick);
@@ -749,7 +749,7 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
         }
     }
     if (!outputCompletedByDeadline) {
-        (void)CancelSynchronousIo(pump.native_handle());
+        (void)CancelSynchronousIo(reinterpret_cast<HANDLE>(pump.native_handle()));
     }
     if (pump.joinable()) pump.join();
     if (forwardError != ERROR_SUCCESS && code == kNoFailure) {
