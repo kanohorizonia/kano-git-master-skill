@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <iomanip>
 #include <sstream>
 
 namespace kano::git::commands::export_sha256 {
