@@ -1,22 +1,14 @@
 // export_sha256.hpp -- SHA-256 streaming helper for kog export command.
 //
-// IMPORTANT: This header and its implementation in export_sha256.cpp
-// are deliberately kept free of any include that transitively pulls in
-// MinGW's <x86intrin.h> (which happens via <filesystem> -> <locale> ->
-// <bits/locale_facets.h> on GCC's libstdc++ on windows-ninja-msvc).
-// <x86intrin.h> defines several short parameter-name macros
-// (InValue, InWord, value, w, word, stream, ...) that collide with
-// common identifier names used in this SHA-256 implementation.
-// KOG-BUG-0107 unblocked P2 only after the RotateRight32 helper was
-// moved out of export_cmd.cpp into a translation unit that does NOT
-// include <filesystem> or anything that drags in <x86intrin.h>.
-//
-// The implementation in export_sha256.cpp uses only the minimal safe
-// includes <array>, <algorithm>, <cstdint>, <cstring>, <sstream>,
-// <string>.  Do NOT add <filesystem>, <format>, <regex>, <iostream>,
-// <fstream> or <functional> here -- they transitively include
-// <x86intrin.h> on windows-ninja-msvc and reintroduce the macro
-// collision.
+// KOG-BUG-0107 context: this header and export_sha256.cpp implement
+// SHA-256 helpers in a separate translation unit so the original
+// InValue/InBits parameter names can be kept.  The header has to be
+// #undef-safe because export_cmd.cpp includes <filesystem> via
+// export_helpers.hpp, which on windows-ninja-msvc transitively pulls
+// in MinGW's <x86intrin.h>.  That header defines several short
+// parameter-name macros (InValue, InWord, value, w, word, stream,
+// ...) that would otherwise eat the SHA-256 helper parameter names.
+// We push/undef/pop them here.
 
 #pragma once
 
@@ -24,6 +16,40 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+
+// KOG-BUG-0107: MinGW's <x86intrin.h> (transitively included by
+// <filesystem> on windows-ninja-msvc) defines a number of short
+// parameter-name macros.  The list below is the set we've seen
+// collide with SHA-256 helper parameter names during this ticket.
+// We push and undef each one around the declarations below and pop
+// them again at the end of the header.  This keeps the original
+// InValue / InBits / etc. names usable inside export_sha256.cpp
+// (where the macros are NOT active) and at every call site in
+// export_cmd.cpp (where the macros ARE active).
+#pragma push_macro("InValue")
+#pragma push_macro("InBits")
+#pragma push_macro("InState")
+#pragma push_macro("InBlock")
+#pragma push_macro("InOutState")
+#pragma push_macro("InData")
+#pragma push_macro("InSize")
+#pragma push_macro("InWord")
+#pragma push_macro("value")
+#pragma push_macro("word")
+#pragma push_macro("w")
+#pragma push_macro("stream")
+#undef InValue
+#undef InBits
+#undef InState
+#undef InBlock
+#undef InOutState
+#undef InData
+#undef InSize
+#undef InWord
+#undef value
+#undef word
+#undef w
+#undef stream
 
 namespace kano::git::commands::export_sha256 {
 
@@ -56,3 +82,21 @@ private:
 };
 
 }  // namespace kano::git::commands::export_sha256
+
+// KOG-BUG-0107: restore the macros we pushed above so the rest of
+// the including translation unit (export_cmd.cpp on windows-ninja-msvc
+// still has <x86intrin.h> macros active for its own code) sees them
+// again.  This is intentionally local to the header and has no
+// effect on the including TU's exported symbols.
+#pragma pop_macro("stream")
+#pragma pop_macro("w")
+#pragma pop_macro("word")
+#pragma pop_macro("value")
+#pragma pop_macro("InWord")
+#pragma pop_macro("InSize")
+#pragma pop_macro("InData")
+#pragma pop_macro("InOutState")
+#pragma pop_macro("InBlock")
+#pragma pop_macro("InState")
+#pragma pop_macro("InBits")
+#pragma pop_macro("InValue")
