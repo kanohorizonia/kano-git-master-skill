@@ -48,7 +48,7 @@ namespace {
 // the SHA-256 helper identifiers).  Pull them into the anonymous
 // namespace here so the rest of this file can keep calling them with
 // unqualified names.
-using export_sha256::RotateRight32;
+using export_sha256::kRotR32;
 using export_sha256::FormatSha256State;
 using export_sha256::ProcessSha256Block;
 using export_sha256::Sha256Stream;

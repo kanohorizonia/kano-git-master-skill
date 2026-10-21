@@ -1,16 +1,23 @@
 // export_sha256.hpp -- SHA-256 streaming helper for kog export command.
 //
-// KOG-BUG-0107: this header and export_sha256.cpp live in a separate
-// translation unit (no <filesystem>, no <format>, no <regex>, etc.)
-// so the original InValue / InBits parameter names parse cleanly.
-// The header itself is included by export_cmd.cpp which on
-// windows-ninja-msvc transitively includes <filesystem> ->
-// <bits/locale_facets.h> -> <x86intrin.h>, which defines macros for
-// many short identifiers (InValue, InWord, value, w, word, stream,
-// AND RotateRight32 itself -- expanded to the Windows intrinsic
-// _rotr).  We push/undef/pop the entire known collision set around
-// the declarations so the original InValue / InBits / RotateRight32
-// names parse in the header's namespace.
+// KOG-BUG-0107: the previous r6..r9 attempts (separate translation
+// unit, push_macro / #undef / pop_macro) all hit a wall on
+// windows-ninja-msvc: the MinGW <x86intrin.h> header transitively
+// included by <filesystem> defines a number of short parameter-name
+// macros AND expands the function name "RotateRight32" itself to
+// the Windows intrinsic "_rotr".  Neither parameter renaming nor
+// #undef of the name tokens could reliably win against a MinGW
+// header that turns entire identifiers into macros, because the
+// #pragma arguments themselves get preprocessed before the pragma
+// fires.
+//
+// The fix that actually works: rename everything to identifiers that
+// no MinGW header uses.  We use a `k_` Google-style prefix on every
+// identifier that was previously colliding (kRotR32, kValue, kShift,
+// kState, kBlock, kStateIo, kData, kSize).  The original InValue /
+// InBits / etc. names are kept ONLY inside the implementation file
+// (export_sha256.cpp) which does not transitively include
+// <x86intrin.h>, so they parse cleanly there.
 
 #pragma once
 
@@ -19,59 +26,24 @@
 #include <cstdint>
 #include <string>
 
-// KOG-BUG-0107: MinGW <x86intrin.h> parameter-name macros.
-// push / undef / pop them around the namespace below.
-#pragma push_macro("RotateRight32")
-#pragma push_macro("FormatSha256State")
-#pragma push_macro("ProcessSha256Block")
-#pragma push_macro("Sha256Stream")
-#pragma push_macro("InValue")
-#pragma push_macro("InBits")
-#pragma push_macro("InState")
-#pragma push_macro("InBlock")
-#pragma push_macro("InOutState")
-#pragma push_macro("InData")
-#pragma push_macro("InSize")
-#pragma push_macro("InWord")
-#pragma push_macro("value")
-#pragma push_macro("word")
-#pragma push_macro("w")
-#pragma push_macro("stream")
-#undef RotateRight32
-#undef FormatSha256State
-#undef ProcessSha256Block
-#undef Sha256Stream
-#undef InValue
-#undef InBits
-#undef InState
-#undef InBlock
-#undef InOutState
-#undef InData
-#undef InSize
-#undef InWord
-#undef value
-#undef word
-#undef w
-#undef stream
-
 namespace kano::git::commands::export_sha256 {
 
-// Rotates a 32-bit word right by InBits positions.
-auto RotateRight32(std::uint32_t InValue, int InBits) -> std::uint32_t;
+// Rotates a 32-bit word right by kShift positions.
+auto kRotR32(std::uint32_t kValue, int kShift) -> std::uint32_t;
 
 // Formats the eight 32-bit state words of a SHA-256 midstate as a
 // 64-character lowercase hex string.
-auto FormatSha256State(const std::array<std::uint32_t, 8>& InState) -> std::string;
+auto FormatSha256State(const std::array<std::uint32_t, 8>& kState) -> std::string;
 
-// Processes one 64-byte SHA-256 block, mutating InOutState in place.
-void ProcessSha256Block(const unsigned char* InBlock,
-                        std::array<std::uint32_t, 8>& InOutState);
+// Processes one 64-byte SHA-256 block, mutating kStateIo in place.
+void ProcessSha256Block(const unsigned char* kBlock,
+                        std::array<std::uint32_t, 8>& kStateIo);
 
 // Streaming SHA-256 hasher.  The finalizer returns the lowercase hex
 // digest as a 64-character string.
 class Sha256Stream {
 public:
-    void Update(const unsigned char* InData, std::size_t InSize);
+    void Update(const unsigned char* kData, std::size_t kSize);
     auto Finalize() -> std::string;
 
 private:
@@ -85,24 +57,3 @@ private:
 };
 
 }  // namespace kano::git::commands::export_sha256
-
-// KOG-BUG-0107: pop the macros we pushed above so the rest of the
-// including translation unit (export_cmd.cpp on windows-ninja-msvc
-// still has <x86intrin.h> macros active for its own code) sees them
-// again.  This is intentionally local to the header.
-#pragma pop_macro("stream")
-#pragma pop_macro("w")
-#pragma pop_macro("word")
-#pragma pop_macro("value")
-#pragma pop_macro("InWord")
-#pragma pop_macro("InSize")
-#pragma pop_macro("InData")
-#pragma pop_macro("InOutState")
-#pragma pop_macro("InBlock")
-#pragma pop_macro("InState")
-#pragma pop_macro("InBits")
-#pragma pop_macro("InValue")
-#pragma pop_macro("Sha256Stream")
-#pragma pop_macro("ProcessSha256Block")
-#pragma pop_macro("FormatSha256State")
-#pragma pop_macro("RotateRight32")
