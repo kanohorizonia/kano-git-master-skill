@@ -52,11 +52,21 @@ if(WIN32)
   )
   target_compile_features(kano_git_tui_terminal_state_wrapper PRIVATE cxx_std_23)
   target_link_libraries(kano_git_tui_terminal_state_wrapper PRIVATE KanoInfra::unattended)
+  # KOG-BUG-0107 r12: these test entrypoints use wmain (Windows wide-char
+  # main) on MinGW.  Without -municode the linker looks for WinMain via
+  # crtexewin.c and reports 'undefined reference to WinMain'.  Apply
+  # -municode at link time so the GUI startup uses wmain.
+  if(MINGW)
+    target_link_options(kano_git_tui_terminal_state_wrapper PRIVATE -municode)
+  endif()
   add_executable(kano_git_tui_conpty_host
     integration/windows_tui_conpty_host.cpp
   )
   target_compile_features(kano_git_tui_conpty_host PRIVATE cxx_std_23)
   target_link_libraries(kano_git_tui_conpty_host PRIVATE KanoInfra::unattended)
+  if(MINGW)
+    target_link_options(kano_git_tui_conpty_host PRIVATE -municode)
+  endif()
   add_dependencies(kano_git_tui_tests
     kano_git_tui_terminal_state_wrapper
     kano_git_tui_conpty_host
