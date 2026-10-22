@@ -6,6 +6,16 @@ set_target_properties(kano_git_cli PROPERTIES OUTPUT_NAME kano-git)
 
 target_link_libraries(kano_git_cli PRIVATE kano::git_core kano::git_command kano::git_build_info KanoInfra::unattended)
 
+# KOG-BUG-0107 r13: commit_utils.cpp uses std::println (C++23 <print>),
+# which on MinGW GCC 15 needs an explicit libstdc++ link so the
+# std::__open_terminal and std::__write_to_terminal helpers get pulled
+# in.  Without this, the linker reports "undefined reference to
+# std::__open_terminal" / "std::__write_to_terminal" from
+# libkano_git_cmd_commit_plan.a(commit_utils.cpp.obj).
+if(MINGW)
+  target_link_libraries(kano_git_cli PRIVATE stdc++)
+endif()
+
 set(KOG_RUNTIME_ARTIFACT_DIR "${CMAKE_BINARY_DIR}/runtime-artifact" CACHE PATH "Minimal KOG runtime artifact output directory")
 set(KOG_RUNTIME_MANIFEST_INTERMEDIATE "${CMAKE_CURRENT_BINARY_DIR}/kog-runtime-manifest.configured.json")
 set(KOG_RUNTIME_MANIFEST_CONFIGURED "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/kog-runtime-manifest.json")
