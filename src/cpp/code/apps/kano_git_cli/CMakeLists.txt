@@ -11,9 +11,14 @@ target_link_libraries(kano_git_cli PRIVATE kano::git_core kano::git_command kano
 # std::__open_terminal and std::__write_to_terminal helpers get pulled
 # in.  Without this, the linker reports "undefined reference to
 # std::__open_terminal" / "std::__write_to_terminal" from
-# libkano_git_cmd_commit_plan.a(commit_utils.cpp.obj).
+# libkano_git_cmd_commit_plan.a(commit_utils.cpp.obj).  r14 changed
+# target_link_libraries to target_link_options with explicit
+# -lstdc++ -Wl,--start-group ... -Wl,--end-group so the linker
+# actually re-scans libstdc++ after libmingw32.a fails to resolve
+# the symbol.
 if(MINGW)
-  target_link_libraries(kano_git_cli PRIVATE stdc++)
+  target_link_options(kano_git_cli PRIVATE
+    "-Wl,--start-group" "-lstdc++" "-Wl,--end-group")
 endif()
 
 set(KOG_RUNTIME_ARTIFACT_DIR "${CMAKE_BINARY_DIR}/runtime-artifact" CACHE PATH "Minimal KOG runtime artifact output directory")
