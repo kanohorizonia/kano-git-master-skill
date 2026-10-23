@@ -15,5 +15,5 @@ target_link_libraries(kano_git_tui PRIVATE kano::git_core kano::git_command Kano
 # after libmingw32.a fails to resolve the symbol.
 if(MINGW)
   target_link_options(kano_git_tui PRIVATE
-    "-Wl,--start-group" "-lstdc++" "-Wl,--end-group")
+    "-Wl,--whole-archive" "-lstdc++" "-Wl,--no-whole-archive")
 endif()

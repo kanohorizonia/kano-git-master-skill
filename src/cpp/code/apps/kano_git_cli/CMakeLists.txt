@@ -18,7 +18,7 @@ target_link_libraries(kano_git_cli PRIVATE kano::git_core kano::git_command kano
 # the symbol.
 if(MINGW)
   target_link_options(kano_git_cli PRIVATE
-    "-Wl,--start-group" "-lstdc++" "-Wl,--end-group")
+    "-Wl,--whole-archive" "-lstdc++" "-Wl,--no-whole-archive")
 endif()
 
 set(KOG_RUNTIME_ARTIFACT_DIR "${CMAKE_BINARY_DIR}/runtime-artifact" CACHE PATH "Minimal KOG runtime artifact output directory")
