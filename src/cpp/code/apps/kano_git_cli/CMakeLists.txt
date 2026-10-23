@@ -17,8 +17,16 @@ target_link_libraries(kano_git_cli PRIVATE kano::git_core kano::git_command kano
 # actually re-scans libstdc++ after libmingw32.a fails to resolve
 # the symbol.
 if(MINGW)
-  target_link_options(kano_git_cli PRIVATE
-    "-Wl,--whole-archive" "-lstdc++" "-Wl,--no-whole-archive")
+  # KOG-BUG-0107 r16: r15's --whole-archive brought in BOTH the
+  # dynamic libstdc++_dll import library AND the static libstdc++.a
+  # contents, causing "multiple definition" errors for
+  # std::system_error::system_error and others.  Switch to
+  # -static-libstdc++ which forces the static archive (the one that
+  # defines __open_terminal and __write_to_terminal) and excludes
+  # the DLL import library.  The duplicate-definition problem goes
+  # away, and the missing-symbol problem is solved in the same
+  # link.
+  target_link_options(kano_git_cli PRIVATE -static-libstdc++)
 endif()
 
 set(KOG_RUNTIME_ARTIFACT_DIR "${CMAKE_BINARY_DIR}/runtime-artifact" CACHE PATH "Minimal KOG runtime artifact output directory")

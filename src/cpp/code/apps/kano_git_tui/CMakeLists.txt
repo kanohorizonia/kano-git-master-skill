@@ -6,14 +6,12 @@ set_target_properties(kano_git_tui PROPERTIES OUTPUT_NAME kano-git-tui)
 
 target_link_libraries(kano_git_tui PRIVATE kano::git_core kano::git_command KanoInfra::unattended)
 
-# KOG-BUG-0107 r13: same libstdc++ link fix as kano_git_cli (the
-# production-path TUI entrypoint also uses std::println transitively
-# through commit_utils, which on MinGW GCC 15 needs libstdc++ to be
-# in the link line so std::__open_terminal / std::__write_to_terminal
-# are found).  r14 changed to target_link_options with -lstdc++ inside
-# --start-group/--end-group so the linker actually re-scans libstdc++
-# after libmingw32.a fails to resolve the symbol.
+# KOG-BUG-0107 r16: r15'"'"'s --whole-archive brought in BOTH the
+# dynamic libstdc++_dll import library AND the static libstdc++.a
+# contents, causing "multiple definition" errors.  Switch to
+# -static-libstdc++ which forces the static archive and excludes
+# the DLL import library.  The duplicate-definition problem goes
+# away, and the missing-symbol problem is solved in the same link.
 if(MINGW)
-  target_link_options(kano_git_tui PRIVATE
-    "-Wl,--whole-archive" "-lstdc++" "-Wl,--no-whole-archive")
+  target_link_options(kano_git_tui PRIVATE -static-libstdc++)
 endif()
