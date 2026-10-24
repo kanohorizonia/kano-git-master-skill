@@ -6,29 +6,6 @@ set_target_properties(kano_git_cli PROPERTIES OUTPUT_NAME kano-git)
 
 target_link_libraries(kano_git_cli PRIVATE kano::git_core kano::git_command kano::git_build_info KanoInfra::unattended)
 
-# KOG-BUG-0107 r13: commit_utils.cpp uses std::println (C++23 <print>),
-# which on MinGW GCC 15 needs an explicit libstdc++ link so the
-# std::__open_terminal and std::__write_to_terminal helpers get pulled
-# in.  Without this, the linker reports "undefined reference to
-# std::__open_terminal" / "std::__write_to_terminal" from
-# libkano_git_cmd_commit_plan.a(commit_utils.cpp.obj).  r14 changed
-# target_link_libraries to target_link_options with explicit
-# -lstdc++ -Wl,--start-group ... -Wl,--end-group so the linker
-# actually re-scans libstdc++ after libmingw32.a fails to resolve
-# the symbol.
-if(MINGW)
-  # KOG-BUG-0107 r16: r15's --whole-archive brought in BOTH the
-  # dynamic libstdc++_dll import library AND the static libstdc++.a
-  # contents, causing "multiple definition" errors for
-  # std::system_error::system_error and others.  Switch to
-  # -static-libstdc++ which forces the static archive (the one that
-  # defines __open_terminal and __write_to_terminal) and excludes
-  # the DLL import library.  The duplicate-definition problem goes
-  # away, and the missing-symbol problem is solved in the same
-  # link.
-  target_link_options(kano_git_cli PRIVATE -static-libstdc++)
-endif()
-
 set(KOG_RUNTIME_ARTIFACT_DIR "${CMAKE_BINARY_DIR}/runtime-artifact" CACHE PATH "Minimal KOG runtime artifact output directory")
 set(KOG_RUNTIME_MANIFEST_INTERMEDIATE "${CMAKE_CURRENT_BINARY_DIR}/kog-runtime-manifest.configured.json")
 set(KOG_RUNTIME_MANIFEST_CONFIGURED "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/kog-runtime-manifest.json")

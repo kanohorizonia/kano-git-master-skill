@@ -33,7 +33,6 @@
 #include <iomanip>
 #include <mutex>
 #include <optional>
-#include <print>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
@@ -3362,7 +3361,7 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
 
     auto stageMessages = BuildStageMessageMap(*parsed, *stage);
     if (stageMessages.empty()) {
-        std::println("[native-commit] no entries found for selected --plan-stage; skipping commit.");
+        std::cout << "[native-commit] no entries found for selected --plan-stage; skipping commit." << '\n';
         if (InProfile) {
             const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
             std::cout << "\n=== Commit Profile Summary ===\n";
@@ -3676,7 +3675,7 @@ auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
 
     auto stageMessages = BuildStageMessageMap(*parsed, *stage);
     if (stageMessages.empty()) {
-        std::println("[native-amend] no entries found for selected --plan-stage; skipping amend.");
+        std::cout << "[native-amend] no entries found for selected --plan-stage; skipping amend." << '\n';
         if (InProfile) {
             const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
             std::cout << "\n=== Amend Profile Summary ===\n";
@@ -4386,7 +4385,7 @@ void ConfigureCommitCommand(CLI::App& InApp) {
 
             const auto report = cachedPreflightReport.has_value() ? *cachedPreflightReport : RunCommitPreflight(workspaceRoot);
             if (!HasAnyChanges(report)) {
-                std::println("[native-commit] workspace clean; skipping auto-plan generation and commit.");
+                std::cout << "[native-commit] workspace clean; skipping auto-plan generation and commit." << '\n';
                 std::exit(0);
             }
 
@@ -4458,7 +4457,7 @@ void ConfigureCommitCommand(CLI::App& InApp) {
         if (!commitPlanFile->empty()) {
             const auto report = cachedPreflightReport.has_value() ? *cachedPreflightReport : RunCommitPreflight(workspaceRoot);
             if (!HasAnyChanges(report)) {
-                std::println("[native-commit] workspace clean; skipping --plan-file validation and commit.");
+                std::cout << "[native-commit] workspace clean; skipping --plan-file validation and commit." << '\n';
                 if (*bProfile) {
                     const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
                     std::cout << "\n=== Commit Profile Summary ===\n";
@@ -4533,7 +4532,7 @@ void ConfigureCommitCommand(CLI::App& InApp) {
 
             stageMessages = BuildStageMessageMap(*parsed, *selectedPlanStage);
             if (stageMessages.empty()) {
-                std::println("[native-commit] no entries found for selected --plan-stage; skipping commit.");
+                std::cout << "[native-commit] no entries found for selected --plan-stage; skipping commit." << '\n';
                 if (*bProfile) {
                     const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
                     std::cout << "\n=== Commit Profile Summary ===\n";
