@@ -284,6 +284,26 @@ if(MSVC)
         "$<$<COMPILE_LANGUAGE:CXX>:/utf-8>"
     )
 endif()
+# KOG-BUG-0107 r19: the MinGW toolchain the windows-ninja-msvc matrix
+# entry uses (C:/mingw64, GCC 15.2) produces executables that import
+# libstdc++-6.dll / libgcc_s_seh-1.dll at runtime.  The Windows runner
+# image also carries an older MinGW runtime (Git for Windows ships
+# C:/Program Files/Git/mingw64/bin), and when that older directory
+# wins the DLL search order the freshly linked executable aborts with
+# STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139) before main() runs.
+#
+# That broke catch_discover_tests, which executes
+# kano_git_tui_tests.exe --list-tests at build time to enumerate the
+# test cases, so the whole TUI PR Gates build failed after the
+# binaries had already linked.
+#
+# Link the GCC runtime statically so the executables are
+# self-contained and cannot be broken by a shadowing DLL.  This also
+# makes the packaged kog runtime artifact on Windows independent of
+# whatever libstdc++ happens to be installed on the target machine.
+if(MINGW)
+    string(APPEND CMAKE_EXE_LINKER_FLAGS " -static-libstdc++ -static-libgcc")
+endif()
 
 # ---------------------------------------------------------------------------
 # Version and build metadata resolution
