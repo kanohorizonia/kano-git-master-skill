@@ -8,7 +8,34 @@ kog_fetchcontent_declare_git(
     REPOSITORY https://github.com/catchorg/Catch2.git
     TAG v3.5.2
 )
+# KOG-BUG-0107 r18: Catch2's own CMakeLists publishes a global
+# BUILD_SHARED_LIBS=ON cache value, so Catch2 was being built as
+# libCatch2.dll on windows-ninja-msvc.  The test executable then
+# depends on that DLL, and the catch_discover_tests discovery run
+# (which executes kano_git_tui_tests.exe --list-tests before CTest can
+# run anything) dies with STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139),
+# aborting the whole TUI PR Gates build.
+#
+# Build Catch2 statically so the test executables are self-contained.
+# This mirrors the existing BUILD_SHARED_LIBS save/restore dance that
+# kano_git_commit_plan_tests already uses for rapidcheck (which has the
+# same "no Windows DLL ABI" constraint and the same root cause: a
+# fetched dependency publishing a global BUILD_SHARED_LIBS cache value).
+if(DEFINED BUILD_SHARED_LIBS)
+  set(_kog_catch2_build_shared_libs_was_defined TRUE)
+  set(_kog_catch2_saved_build_shared_libs "${BUILD_SHARED_LIBS}")
+else()
+  set(_kog_catch2_build_shared_libs_was_defined FALSE)
+endif()
+set(BUILD_SHARED_LIBS OFF)
 FetchContent_MakeAvailable(Catch2)
+if(_kog_catch2_build_shared_libs_was_defined)
+  set(BUILD_SHARED_LIBS "${_kog_catch2_saved_build_shared_libs}")
+else()
+  unset(BUILD_SHARED_LIBS)
+endif()
+unset(_kog_catch2_build_shared_libs_was_defined)
+unset(_kog_catch2_saved_build_shared_libs)
 
 # Enable testing
 enable_testing()
