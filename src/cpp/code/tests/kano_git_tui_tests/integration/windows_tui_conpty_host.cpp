@@ -212,7 +212,14 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
     DWORD childExit = STILL_ACTIVE;
     bool outputEof = false;
     bool closeReturned = false;
-    if (InArgumentCount != 4 && InArgumentCount != 5 && InArgumentCount != 6) {
+    // KOG-BUG-0107: 7 arguments is the q-after-marker mode WITH the
+    // optional single-byte "kick" prefix (argv[6]), used to trigger the
+    // TUI's :refresh command so git actually launches before q/Esc is
+    // sent.  The argument-count guard used to stop at 6, so the kick
+    // mode was rejected with kExitUsage before the q-after-marker
+    // branch below could ever parse argv[6].
+    if (InArgumentCount != 4 && InArgumentCount != 5 && InArgumentCount != 6 &&
+        InArgumentCount != 7) {
         return PrintResult(false, code, win32, childExit, outputEof);
     }
     const bool sendEscape = std::wcscmp(InArguments[1], L"escape") == 0;
