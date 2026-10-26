@@ -46,6 +46,10 @@ constexpr DWORD kExitAfterMarkerInput = 26;
 constexpr DWORD kExitAfterMarkerAck = 27;
 constexpr DWORD kExitAfterMarkerChildWait = 28;
 constexpr DWORD kExitAfterMarkerChildStatus = 29;
+// KOG-BUG-0107: the kick byte was sent before the production TUI had a
+// selected repository, so the refresh was a no-op and the fake git never
+// launched.
+constexpr DWORD kExitKickRepoNotReady = 30;
 constexpr DWORD kNoFailure = MAXDWORD;
 constexpr short kResizeColumns = 121;
 constexpr short kResizeRows = 37;
@@ -406,6 +410,13 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
     Needle resizedFrame(resizedNeedle);
     Needle altScreenExit("\x1b[?1049l");
     Needle terminalStateRestored("KOG_TUI_TERMINAL_STATE_RESTORED");
+    // KOG-BUG-0107: the production TUI reports a usable repository with
+    // its startup-inventory completion footer.  Both variants share the
+    // "ready; Enter opens" substring ("root repo ready; ..." for the
+    // root fallback, "cached inventory ready; ..." for the cached path).
+    // The kick byte refreshes the SELECTED repository, so it must not be
+    // written before this footer appears.
+    Needle repoReady("ready; Enter opens");
     bool resizePending = false;
     bool resizeCommitted = false;
     bool inputPending = false;
@@ -453,6 +464,7 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
             {
                 std::scoped_lock lock(mutex);
                 firstFrame.Consume(chunk);
+                repoReady.Consume(chunk);
                 if (resizePending) resizedFrame.Consume(chunk);
                 if (inputPending) {
                     for (const char byte : chunk) {
@@ -520,31 +532,54 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
         // If the fake git is still blocked at the deadline, the test
         // fails: the q/Esc path did not cancel the running subprocess.
         //
-        // When a kick byte is provided, write it BEFORE the marker wait
-        // so the production TUI's :refresh kicks a real git launch
-        // through the fake git (the only practical way to drive an
-        // in-flight owned subprocess from the production TUI's startup
-        // inventory path).
+        // When a kick byte is provided, write it so the production TUI's
+        // refresh kicks a real git launch through the fake git (the only
+        // practical way to drive an in-flight owned subprocess from the
+        // production TUI's startup inventory path).
+        //
+        // KOG-BUG-0107: the kick refreshes the SELECTED repository, so it
+        // must not be written before the production TUI has one.  Writing
+        // it too early produced "repo refresh skipped: no selected repo"
+        // and the fake git never launched, so the marker never appeared.
+        // Wait (bounded) for the startup-inventory completion footer first.
         if (qAfterMarkerKick != '\0') {
-            DWORD kickWritten = 0U;
-            BOOL kickWrote = FALSE;
-            DWORD kickError = ERROR_SUCCESS;
+            const auto repoReadyDeadline = std::chrono::steady_clock::now() +
+                kQAfterMarkerDeadline;
+            bool repoBecameReady = false;
             {
-                std::scoped_lock lock(mutex);
-                kickWrote = WriteFile(
-                    inputWrite.Get(),
-                    &qAfterMarkerKick,
-                    1U,
-                    &kickWritten,
-                    nullptr);
-                if (!kickWrote || kickWritten != 1U) {
-                    kickError = kickWrote ? ERROR_WRITE_FAULT : GetLastError();
+                std::unique_lock lock(mutex);
+                const bool observed = changed.wait_until(
+                    lock, repoReadyDeadline,
+                    [&] { return repoReady.Found() || outputComplete; });
+                repoBecameReady = repoReady.Found();
+                if (!observed && !repoBecameReady) {
+                    win32 = ERROR_TIMEOUT;
                 }
             }
-            changed.notify_all();
-            if (!kickWrote || kickWritten != 1U) {
-                code = kExitAfterMarkerInput;
-                win32 = kickError;
+            if (!repoBecameReady) {
+                code = kExitKickRepoNotReady;
+                if (win32 == ERROR_SUCCESS) win32 = ERROR_TIMEOUT;
+            } else {
+                DWORD kickWritten = 0U;
+                BOOL kickWrote = FALSE;
+                DWORD kickError = ERROR_SUCCESS;
+                {
+                    std::scoped_lock lock(mutex);
+                    kickWrote = WriteFile(
+                        inputWrite.Get(),
+                        &qAfterMarkerKick,
+                        1U,
+                        &kickWritten,
+                        nullptr);
+                    if (!kickWrote || kickWritten != 1U) {
+                        kickError = kickWrote ? ERROR_WRITE_FAULT : GetLastError();
+                    }
+                }
+                changed.notify_all();
+                if (!kickWrote || kickWritten != 1U) {
+                    code = kExitAfterMarkerInput;
+                    win32 = kickError;
+                }
             }
         }
         const auto markerDeadline = std::chrono::steady_clock::now() +
