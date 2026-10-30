@@ -15,6 +15,8 @@
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -560,10 +562,22 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
                 code = kExitKickRepoNotReady;
                 if (win32 == ERROR_SUCCESS) win32 = ERROR_TIMEOUT;
             } else {
+                // KOG-BUG-0107 r22: open the fake-git gate right before
+                // the kick so the refresh that follows is the invocation
+                // that writes the READY marker and blocks.  Until the
+                // gate is open the fake git delegates to the real git,
+                // which is what the production TUI's startup inventory
+                // discovery needs.
+                const auto gatePath = std::filesystem::path(qAfterMarkerFile)
+                    .concat(".gate");
+                std::ofstream gate(gatePath, std::ios::binary | std::ios::trunc);
+                const bool gateOpened = gate.good();
+                gate.close();
+
                 DWORD kickWritten = 0U;
                 BOOL kickWrote = FALSE;
                 DWORD kickError = ERROR_SUCCESS;
-                {
+                if (gateOpened) {
                     std::scoped_lock lock(mutex);
                     kickWrote = WriteFile(
                         inputWrite.Get(),
@@ -576,7 +590,10 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
                     }
                 }
                 changed.notify_all();
-                if (!kickWrote || kickWritten != 1U) {
+                if (!gateOpened) {
+                    code = kExitKickRepoNotReady;
+                    win32 = ERROR_ACCESS_DENIED;
+                } else if (!kickWrote || kickWritten != 1U) {
                     code = kExitAfterMarkerInput;
                     win32 = kickError;
                 }

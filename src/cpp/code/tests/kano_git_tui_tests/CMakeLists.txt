@@ -67,9 +67,24 @@ if(WIN32)
   if(MINGW)
     target_link_options(kano_git_tui_conpty_host PRIVATE -municode)
   endif()
+  # KOG-BUG-0107 r22: the production TUI spawns git through
+  # CreateProcessA, which appends ".exe" to a bare "git" and does NOT
+  # consult PATHEXT.  A batch file named git.cmd on PATH is therefore
+  # never used and the real git always wins, so the q/Esc acceptance
+  # chain could never observe a fake-git READY marker.  This helper is
+  # copied to <fake-bin>/git.exe by the test so the production TUI
+  # really spawns and owns the fake git.
+  add_executable(kano_git_fake_git
+    integration/windows_fake_git.cpp
+  )
+  target_compile_features(kano_git_fake_git PRIVATE cxx_std_23)
+  if(MINGW)
+    target_link_options(kano_git_fake_git PRIVATE -municode)
+  endif()
   add_dependencies(kano_git_tui_tests
     kano_git_tui_terminal_state_wrapper
     kano_git_tui_conpty_host
+    kano_git_fake_git
   )
 endif()
 

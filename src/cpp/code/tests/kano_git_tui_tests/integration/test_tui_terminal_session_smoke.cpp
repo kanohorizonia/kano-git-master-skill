@@ -1503,20 +1503,31 @@ TEST_CASE(
     const auto workspace = (sandbox.Root() / "ws").lexically_normal();
     InitializeWindowsFixtureRepository(workspace);
 
-    // Fake git that signals via a marker file then blocks for 30 s.
+    // KOG-BUG-0107 r22: the fake git must be a real .exe.
+    // The production TUI spawns git through CreateProcessA, which
+    // appends ".exe" to a bare "git" command name and does NOT consult
+    // PATHEXT, so the previous git.cmd on PATH was never used and the
+    // real git always ran.  Copy the kano_git_fake_git helper to
+    // <fake-bin>/git.exe instead: it delegates to the real git until
+    // the ConPTY host opens the gate, then writes the READY marker and
+    // blocks so the production TUI genuinely owns a running child.
     const auto fakeBinDir = sandbox.Root() / "fake-bin";
     std::filesystem::create_directories(fakeBinDir);
-    const auto fakeGit = fakeBinDir / "git.cmd";
     const std::string markerPath = (sandbox.Root() / "fake-git-marker")
         .lexically_normal().generic_string();
-    std::ofstream fakeScript(fakeGit, std::ios::binary | std::ios::trunc);
-    REQUIRE(fakeScript.good());
-    fakeScript <<
-        "@echo off\r\n"
-        "echo KOG_FAKE_GIT_READY > \"" << markerPath << "\"\r\n"
-        "ping -n 30 127.0.0.1 > nul\r\n";
-    fakeScript.close();
+    const auto helperBinaries =
+        kano::git::tests::functional::ResolveKogBinaryPath().parent_path();
+    const auto fakeGitHelper = helperBinaries / "kano_git_fake_git.exe";
+    REQUIRE(std::filesystem::exists(fakeGitHelper));
+    const auto fakeGit = fakeBinDir / "git.exe";
+    std::error_code copyError;
+    std::filesystem::copy_file(
+        fakeGitHelper, fakeGit, std::filesystem::copy_options::overwrite_existing,
+        copyError);
+    REQUIRE_FALSE(copyError);
     REQUIRE(std::filesystem::exists(fakeGit));
+    const ScopedWindowsEnvironment fakeGitMarkerEnv(
+        "KOG_TEST_FAKE_GIT_MARKER", markerPath.c_str());
 
     // Prepend the fake bin directory to PATH so the production TUI's
     // git subprocess picks up our fake.  ScopedWindowsEnvironment
@@ -1542,14 +1553,12 @@ TEST_CASE(
     std::error_code removeError;
     std::filesystem::remove(markerPath, removeError);
 
-    const auto binaries =
-        kano::git::tests::functional::ResolveKogBinaryPath().parent_path();
     // Wide-string form for the conpty host argument list.
     const std::wstring wideMarker = std::wstring(
         markerPath.begin(), markerPath.end());
     WindowsConPtyHostController controller(
-        binaries / "kano_git_tui_conpty_host.exe",
-        binaries / "kano_git_tui_terminal_state_wrapper.exe",
+        helperBinaries / "kano_git_tui_conpty_host.exe",
+        helperBinaries / "kano_git_tui_terminal_state_wrapper.exe",
         StandaloneTuiBinary(),
         /* bInEscape = */ false,
         /* bInStallBeforeClose = */ false,
@@ -1591,18 +1600,25 @@ TEST_CASE(
     const auto workspace = (sandbox.Root() / "ws").lexically_normal();
     InitializeWindowsFixtureRepository(workspace);
 
+    // KOG-BUG-0107 r22: the fake git must be a real .exe (see the q
+    // test case for the CreateProcessA / PATHEXT rationale).
     const auto fakeBinDir = sandbox.Root() / "fake-bin";
     std::filesystem::create_directories(fakeBinDir);
-    const auto fakeGit = fakeBinDir / "git.cmd";
     const std::string markerPath = (sandbox.Root() / "fake-git-marker")
         .lexically_normal().generic_string();
-    std::ofstream fakeScript(fakeGit, std::ios::binary | std::ios::trunc);
-    REQUIRE(fakeScript.good());
-    fakeScript <<
-        "@echo off\r\n"
-        "echo KOG_FAKE_GIT_READY > \"" << markerPath << "\"\r\n"
-        "ping -n 30 127.0.0.1 > nul\r\n";
-    fakeScript.close();
+    const auto helperBinaries =
+        kano::git::tests::functional::ResolveKogBinaryPath().parent_path();
+    const auto fakeGitHelper = helperBinaries / "kano_git_fake_git.exe";
+    REQUIRE(std::filesystem::exists(fakeGitHelper));
+    const auto fakeGit = fakeBinDir / "git.exe";
+    std::error_code copyError;
+    std::filesystem::copy_file(
+        fakeGitHelper, fakeGit, std::filesystem::copy_options::overwrite_existing,
+        copyError);
+    REQUIRE_FALSE(copyError);
+    REQUIRE(std::filesystem::exists(fakeGit));
+    const ScopedWindowsEnvironment fakeGitMarkerEnv(
+        "KOG_TEST_FAKE_GIT_MARKER", markerPath.c_str());
 
     char originalPath[32767]{};
     const DWORD pathLength = GetEnvironmentVariableA(
@@ -1618,13 +1634,11 @@ TEST_CASE(
     std::error_code removeError;
     std::filesystem::remove(markerPath, removeError);
 
-    const auto binaries =
-        kano::git::tests::functional::ResolveKogBinaryPath().parent_path();
     const std::wstring wideMarker = std::wstring(
         markerPath.begin(), markerPath.end());
     WindowsConPtyHostController controller(
-        binaries / "kano_git_tui_conpty_host.exe",
-        binaries / "kano_git_tui_terminal_state_wrapper.exe",
+        helperBinaries / "kano_git_tui_conpty_host.exe",
+        helperBinaries / "kano_git_tui_terminal_state_wrapper.exe",
         StandaloneTuiBinary(),
         /* bInEscape = */ true,
         /* bInStallBeforeClose = */ false,
