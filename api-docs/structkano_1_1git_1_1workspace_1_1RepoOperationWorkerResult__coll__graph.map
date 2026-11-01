@@ -1,7 +1,7 @@
 <map id="kano::git::workspace::RepoOperationWorkerResult" name="kano::git::workspace::RepoOperationWorkerResult">
-<area shape="rect" id="Node000001" title=" " alt="" coords="5,241,219,281"/>
-<area shape="rect" id="Node000002" title=" " alt="" coords="69,95,155,120"/>
-<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="115,133,115,241,109,241,109,133"/>
-<area shape="rect" id="Node000003" title=" " alt="" coords="43,5,181,45"/>
-<area shape="poly" id="edge2_Node000002_Node000003" title=" " alt="" coords="115,59,115,94,109,94,109,59"/>
+<area shape="rect" id="Node000001" title=" " alt="" coords="5,289,218,334"/>
+<area shape="rect" id="Node000002" title=" " alt="" coords="68,99,155,127"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="114,142,114,290,109,289,109,144"/>
+<area shape="rect" id="Node000003" title=" " alt="" coords="42,5,181,50"/>
+<area shape="poly" id="edge2_Node000002_Node000003" title=" " alt="" coords="112,63,114,99,109,98,111,68"/>
 </map>

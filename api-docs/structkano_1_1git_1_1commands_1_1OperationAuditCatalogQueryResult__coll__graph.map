@@ -1,21 +1,21 @@
 <map id="kano::git::commands::OperationAuditCatalogQueryResult" name="kano::git::commands::OperationAuditCatalogQueryResult">
-<area shape="rect" id="Node000001" title=" " alt="" coords="1837,39,2055,94"/>
-<area shape="rect" id="Node000002" title=" " alt="" coords="1528,122,1753,177"/>
-<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="1755,116,1844,91,1845,97,1756,121"/>
-<area shape="rect" id="Node000003" href="$structkano_1_1git_1_1commands_1_1OperationAuditCatalogEntry.html" title=" " alt="" coords="1203,276,1415,316"/>
-<area shape="poly" id="edge2_Node000002_Node000003" title=" " alt="" coords="1366,268,1576,174,1578,179,1369,273"/>
-<area shape="rect" id="Node000004" title=" " alt="" coords="193,218,280,243"/>
-<area shape="poly" id="edge10_Node000001_Node000004" title=" " alt="" coords="254,205,298,156,363,99,401,73,443,52,487,37,533,32,1642,32,1742,37,1837,47,1837,52,1742,42,1642,37,533,37,488,43,445,57,404,78,366,104,302,160,258,209"/>
-<area shape="poly" id="edge3_Node000003_Node000004" title=" " alt="" coords="294,227,624,229,847,237,1074,253,1209,273,1208,279,1073,259,847,242,624,234,294,232"/>
-<area shape="rect" id="Node000007" href="$structkano_1_1git_1_1commands_1_1OperationAuditCatalogRepositoryCommit.html" title=" " alt="" coords="411,269,659,323"/>
-<area shape="poly" id="edge7_Node000007_Node000004" title=" " alt="" coords="272,248,305,261,357,275,411,284,410,289,356,280,303,267,270,252"/>
-<area shape="rect" id="Node000005" title=" " alt="" coords="5,211,144,251"/>
-<area shape="poly" id="edge4_Node000004_Node000005" title=" " alt="" coords="157,228,193,228,193,233,157,233"/>
-<area shape="rect" id="Node000006" title=" " alt="" coords="838,269,1063,323"/>
-<area shape="poly" id="edge5_Node000003_Node000006" title=" " alt="" coords="1077,293,1202,293,1202,299,1077,299"/>
-<area shape="poly" id="edge6_Node000006_Node000007" title=" " alt="" coords="672,293,838,293,838,299,672,299"/>
-<area shape="rect" id="Node000008" href="$structkano_1_1git_1_1commands_1_1OperationAuditCatalogRedactionSummary.html" title=" " alt="" coords="829,347,1072,402"/>
-<area shape="poly" id="edge8_Node000003_Node000008" title=" " alt="" coords="1085,342,1216,313,1218,319,1086,348"/>
-<area shape="rect" id="Node000009" href="$structkano_1_1git_1_1commands_1_1OperationAuditCatalogTruncationSummary.html" title=" " alt="" coords="828,426,1073,481"/>
-<area shape="poly" id="edge9_Node000003_Node000009" title=" " alt="" coords="1055,419,1072,412,1182,361,1271,314,1274,318,1185,366,1074,417,1057,424"/>
+<area shape="rect" id="Node000001" title=" " alt="" coords="1852,55,2068,117"/>
+<area shape="rect" id="Node000002" title=" " alt="" coords="1540,162,1765,224"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="1757,154,1866,118,1871,117,1759,159"/>
+<area shape="rect" id="Node000003" href="$structkano_1_1git_1_1commands_1_1OperationAuditCatalogEntry.html" title=" " alt="" coords="1212,389,1423,434"/>
+<area shape="poly" id="edge2_Node000002_Node000003" title=" " alt="" coords="1365,378,1601,225,1606,223,1368,382"/>
+<area shape="rect" id="Node000004" title=" " alt="" coords="193,330,279,357"/>
+<area shape="poly" id="edge10_Node000001_Node000004" title=" " alt="" coords="247,314,285,242,314,199,347,155,387,115,431,81,481,58,508,52,536,50,1654,50,1756,55,1854,68,1849,69,1755,60,1654,55,536,55,509,57,483,63,434,86,390,119,351,158,318,202,290,245,252,317"/>
+<area shape="poly" id="edge3_Node000003_Node000004" title=" " alt="" coords="294,341,628,346,851,353,1079,366,1134,370,1188,378,1229,388,1224,388,1188,383,1133,375,1079,371,851,359,627,351,295,346"/>
+<area shape="rect" id="Node000007" href="$structkano_1_1git_1_1commands_1_1OperationAuditCatalogRepositoryCommit.html" title=" " alt="" coords="413,380,661,442"/>
+<area shape="poly" id="edge7_Node000007_Node000004" title=" " alt="" coords="266,364,304,385,358,399,416,409,411,410,357,404,302,389,266,369"/>
+<area shape="rect" id="Node000005" title=" " alt="" coords="5,321,144,366"/>
+<area shape="poly" id="edge4_Node000004_Node000005" title=" " alt="" coords="158,341,195,342,190,345,161,346"/>
+<area shape="rect" id="Node000006" title=" " alt="" coords="845,380,1069,442"/>
+<area shape="poly" id="edge5_Node000003_Node000006" title=" " alt="" coords="1084,409,1214,411,1209,412,1085,414"/>
+<area shape="poly" id="edge6_Node000006_Node000007" title=" " alt="" coords="676,409,847,411,842,412,677,414"/>
+<area shape="rect" id="Node000008" href="$structkano_1_1git_1_1commands_1_1OperationAuditCatalogRedactionSummary.html" title=" " alt="" coords="836,466,1078,528"/>
+<area shape="poly" id="edge8_Node000003_Node000008" title=" " alt="" coords="1093,462,1218,435,1223,434,1094,467"/>
+<area shape="rect" id="Node000009" href="$structkano_1_1git_1_1commands_1_1OperationAuditCatalogTruncationSummary.html" title=" " alt="" coords="835,551,1079,613"/>
+<area shape="poly" id="edge9_Node000003_Node000009" title=" " alt="" coords="1063,543,1078,537,1133,515,1187,490,1281,435,1286,433,1189,495,1135,520,1080,542,1064,548"/>
 </map>

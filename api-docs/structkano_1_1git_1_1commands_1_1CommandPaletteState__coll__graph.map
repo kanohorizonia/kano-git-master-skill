@@ -1,12 +1,12 @@
 <map id="kano::git::commands::CommandPaletteState" name="kano::git::commands::CommandPaletteState">
-<area shape="rect" id="Node000001" title="State for command palette mode." alt="" coords="5,432,181,472"/>
-<area shape="rect" id="Node000002" title=" " alt="" coords="110,315,327,355"/>
-<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="190,366,116,434,112,430,186,362"/>
-<area shape="rect" id="Node000003" href="$structkano_1_1git_1_1commands_1_1PaletteItem.html" title=" " alt="" coords="118,212,277,252"/>
-<area shape="poly" id="edge2_Node000002_Node000003" title=" " alt="" coords="207,265,217,314,212,315,202,266"/>
-<area shape="rect" id="Node000004" title=" " alt="" coords="50,95,137,120"/>
-<area shape="poly" id="edge5_Node000001_Node000004" title=" " alt="" coords="96,133,96,432,91,432,91,133"/>
-<area shape="poly" id="edge3_Node000003_Node000004" title=" " alt="" coords="114,129,183,210,179,213,110,132"/>
-<area shape="rect" id="Node000005" title=" " alt="" coords="24,5,163,45"/>
-<area shape="poly" id="edge4_Node000004_Node000005" title=" " alt="" coords="96,59,96,94,91,94,91,59"/>
+<area shape="rect" id="Node000001" title="State for command palette mode." alt="" coords="5,502,181,547"/>
+<area shape="rect" id="Node000002" title=" " alt="" coords="109,362,325,407"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="190,419,114,504,110,500,185,419"/>
+<area shape="rect" id="Node000003" href="$structkano_1_1git_1_1commands_1_1PaletteItem.html" title=" " alt="" coords="118,245,276,289"/>
+<area shape="poly" id="edge2_Node000002_Node000003" title=" " alt="" coords="204,302,216,362,211,361,202,307"/>
+<area shape="rect" id="Node000004" title=" " alt="" coords="50,99,136,127"/>
+<area shape="poly" id="edge5_Node000001_Node000004" title=" " alt="" coords="96,142,96,502,90,502,90,143"/>
+<area shape="poly" id="edge3_Node000003_Node000004" title=" " alt="" coords="111,137,185,243,180,245,110,142"/>
+<area shape="rect" id="Node000005" title=" " alt="" coords="24,5,162,50"/>
+<area shape="poly" id="edge4_Node000004_Node000005" title=" " alt="" coords="93,63,96,99,90,99,93,68"/>
 </map>
