@@ -2,6 +2,95 @@
   "schema": "kog.regression.incident-map.v1",
   "incidents": [
     {
+      "root_cause": "The native foreach command discarded its dry-run option and dispatched serial and parallel commands, so a requested preview executed an ff-only parent update instead of reporting its plan.",
+      "incident_id": "KOG-BUG-0148",
+      "workflow_contracts": [
+        "plan-scope",
+        "unrelated-stage-preservation"
+      ],
+      "regression_cases": [
+        {
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/foreach_dry_run_fixture_test.cpp",
+          "test_kind": "functional",
+          "case_id": "KOG-BUG-0148/preview-preserves-ref-and-wip",
+          "mapping_state": "source-linked",
+          "test_name": "foreach dry-run preserves refs and local edits before real fast-forward execution"
+        },
+        {
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/foreach_dry_run_fixture_test.cpp",
+          "test_kind": "functional",
+          "case_id": "KOG-BUG-0148/parallel-selector-preview",
+          "mapping_state": "source-linked",
+          "test_name": "foreach dry-run preserves selected parallel repos and excludes the root"
+        }
+      ],
+      "backlog_ref": "KOG-BUG-0148",
+      "change_ref": "KOG-BUG-0148",
+      "incident_date": "2026-11-01"
+    },
+    {
+      "root_cause": "The existing stable-dev workflow selected only unprefixed stable tags and rebased in place before a forceful local branch retarget, leaving DSH prefixed prerelease patch transfers without an explicit pinned target and fresh nonoverwriting branch route.",
+      "incident_id": "KOG-TSK-0145",
+      "workflow_contracts": [
+        "converges-or-fails",
+        "plan-scope"
+      ],
+      "regression_cases": [
+        {
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/sync_upstream_test.cpp",
+          "test_kind": "functional",
+          "case_id": "KOG-TSK-0145/prefixed-prerelease-replay",
+          "mapping_state": "source-linked",
+          "test_name": "sync_upstream_replays_dsh_prerelease_onto_fresh_branch_preserving_source"
+        },
+        {
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/sync_upstream_test.cpp",
+          "test_kind": "functional",
+          "case_id": "KOG-TSK-0145/readonly-plan",
+          "mapping_state": "source-linked",
+          "test_name": "sync_upstream_dry_run_preserves_repository_state"
+        },
+        {
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/sync_upstream_test.cpp",
+          "test_kind": "functional",
+          "case_id": "KOG-TSK-0145/target-and-wip-refusal",
+          "mapping_state": "source-linked",
+          "test_name": "sync_upstream_rejects_existing_target_and_dirty_worktree_without_mutation"
+        },
+        {
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/sync_upstream_test.cpp",
+          "test_kind": "functional",
+          "case_id": "KOG-TSK-0145/selected-retirement",
+          "mapping_state": "source-linked",
+          "test_name": "sync_upstream_replays_selected_patches_and_reports_dropped_commits"
+        },
+        {
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/sync_upstream_test.cpp",
+          "test_kind": "functional",
+          "case_id": "KOG-TSK-0145/recoverable-conflict",
+          "mapping_state": "source-linked",
+          "test_name": "sync_upstream_conflict_retains_recoverable_cherry_pick_state"
+        },
+        {
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/sync_upstream_test.cpp",
+          "test_name": "sync_upstream_preserves_ignored_files_that_upstream_would_track",
+          "mapping_state": "source-linked",
+          "test_kind": "functional",
+          "case_id": "KOG-TSK-0145/ignored-upstream-path"
+        },
+        {
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/sync_upstream_test.cpp",
+          "test_name": "sync_upstream_preserves_ignored_files_that_retained_patches_would_track",
+          "mapping_state": "source-linked",
+          "test_kind": "functional",
+          "case_id": "KOG-TSK-0145/ignored-replayed-path"
+        }
+      ],
+      "backlog_ref": "KOG-TSK-0145",
+      "change_ref": "KOG-TSK-0145",
+      "incident_date": "2026-11-01"
+    },
+    {
       "incident_id": "KOG-TSK-0142",
       "incident_date": "2026-09-29",
       "root_cause": "The exact-path route could isolate unrelated staged paths but had no provenance-preserving recovery for a selected path with pre-existing staged and working changes; broad converge and harvest rejected a dirty target or collapsed those versions, blocking a verified caller-owned commit. PR6 review additionally reproduced raw CRLF versus canonical LF separation failure, root sensitive-directory archival, and loose captured working blobs becoming unreachable under prune before materialization.",

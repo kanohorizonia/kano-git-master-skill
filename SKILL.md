@@ -73,6 +73,22 @@ session debugging, not primary Git Master workflows. Ark-owned runner/provider
 helpers such as `codex-appserver-send.ps1` stay in Ark until KOA-TSK-0223
 productionizes that path.
 
+## Upstream release patch replay
+
+Use `kog sync upstream` to carry a reviewed linear maintenance stack onto a
+fetched release ref, including prefixed prerelease tags. Select the old base,
+new release and a fresh branch explicitly; review `--dry-run` before executing.
+The source branch is preserved. No fetch, stash, force update or push is implicit.
+An optional `--patches-file` selects the retained full commit SHAs in ancestry
+order; conflicts stop in recoverable Git state.
+
+```bash
+./scripts/kog sync upstream --base <old-release> --ref <new-release> --branch codex/<new-release> --dry-run
+```
+
+See [the current command surface](docs/guides/current-command-surface.md) for
+fetch, retained-patch, conflict recovery and publication details.
+
 ## Bash Completion
 
 ```bash

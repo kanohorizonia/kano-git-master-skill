@@ -268,6 +268,43 @@ installed version, install timestamp, packaged/developer checkout).
 > build version, or `kog self status` for install/checkout state.
 ## Common workflows
 
+### Explicit upstream patch replay
+
+Use `sync upstream` for a maintained linear patch stack. Fetch first, then
+review a dry-run against an explicit old base and fetched release ref:
+
+```bash
+kog fetch --repo-root /path/to/repo --no-recursive --remote upstream
+kog sync upstream --repo /path/to/repo --base refs/tags/dsh-v0.2.1-rc.2 \
+  --ref refs/tags/dsh-v0.2.1-rc.5 --branch codex/dsh-v0.2.1-rc.5 --dry-run
+# Repeat without --dry-run after reviewing retained/dropped commits.
+```
+
+The command resolves base, source HEAD and target to pinned commit SHAs.
+Prefixed and prerelease tags are accepted. It requires a clean source branch,
+an absent valid target branch, an unambiguous base/ref, and a merge-free
+`base..HEAD` range; base must be an ancestor of both source and target.
+Ignored paths that overlap target or retained-patch paths are rejected before writes.
+It creates the fresh branch at the exact target SHA and replays retained
+commits in order with `cherry-pick -x`. The original source branch is preserved.
+
+By default every commit in `base..HEAD` is retained. Supply
+`--patches-file /path/to/reviewed-shas.txt` to retain an ancestry-ordered subset:
+one full 40-character SHA per line, with blank lines and `#` comments allowed.
+Duplicates, foreign commits and reordered commits are rejected. An empty file
+deliberately retires the whole stack. Review the printed dropped list and
+record retirement reasons in the owning project; KOG does not infer semantic
+equivalence.
+
+Dry-run performs no fetch, branch/index/worktree update or publication.
+Execution never stashes, resets, force-updates an existing branch, fetches or
+pushes. Conflicts stop on the new branch with normal recoverable cherry-pick
+state; use the printed `kog cherry-pick --continue --repo ...` or
+`kog cherry-pick --abort --repo ...` command, then review the remaining retained
+commits. No automatic rollback or replay of the remaining batch occurs.
+After project validation, publish explicitly with
+`kog push --no-recursive --remote origin`.
+
 ### Nested repository ordering
 
 Mutating `sync`, `commit`, and `commit-push` workflows execute registered

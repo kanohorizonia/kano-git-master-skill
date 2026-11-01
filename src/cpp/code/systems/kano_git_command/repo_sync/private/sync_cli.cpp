@@ -25,6 +25,16 @@ void RegisterSync(CLI::App& InApp) {
     preCommit->add_flag("--profile", options->preCommit.profile, "Print native pre-commit timing/profile summary");
     preCommit->callback(MakeSyncPreCommitCommandCallback(*preCommit, options));
 
+    auto* upstream = cmd->add_subcommand("upstream", "Replay a reviewed linear patch stack onto an exact upstream ref on a fresh branch");
+    upstream->allow_extras();
+    upstream->add_option("--repo", options->upstream.repo, "Exact repository root; fetch refs separately first");
+    upstream->add_option("--base", options->upstream.base, "Old upstream base commit/ref")->required();
+    upstream->add_option("--ref", options->upstream.ref, "Exact fetched release ref or commit; prefixes/prereleases are accepted")->required();
+    upstream->add_option("--branch", options->upstream.branch, "Fresh target branch; existing branches are never overwritten")->required();
+    upstream->add_option("--patches-file", options->upstream.patchesFile, "Reviewed ancestry-ordered subset of full commit SHAs from base..HEAD");
+    upstream->add_flag("--dry-run", options->upstream.dryRun, "Print pinned base/head/target and retained/dropped commits without writes");
+    upstream->callback(MakeSyncUpstreamCommandCallback(*upstream, options));
+
     auto* originLatest = cmd->add_subcommand("origin-latest", "Sync to origin default branch latest");
     originLatest->allow_extras();
     originLatest->add_flag("--shell", options->originLatest.shell, "Deprecated compatibility flag (shell path removed)");

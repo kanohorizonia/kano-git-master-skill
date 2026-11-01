@@ -20,6 +20,7 @@ add_executable(kano_git_cli_tests
   functional/version_command_surface_test.cpp
   functional/discover_inventory_test.cpp
   functional/fetch_command_test.cpp
+  functional/foreach_dry_run_fixture_test.cpp
   functional/log_remote_preview_test.cpp
   functional/log_invocation_bug_condition_test.cpp
   functional/log_invocation_preservation_test.cpp
@@ -29,6 +30,7 @@ add_executable(kano_git_cli_tests
   functional/repo_operation_scheduler_test.cpp
   functional/status_recursive_test.cpp
   functional/sync_module_boundary_test.cpp
+  functional/sync_upstream_test.cpp
 )
 
 target_link_libraries(kano_git_cli_tests

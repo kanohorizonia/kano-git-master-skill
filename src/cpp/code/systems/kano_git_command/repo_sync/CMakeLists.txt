@@ -15,6 +15,7 @@ target_sources(kano_git_cmd_repo_sync
     private/subtree_cmd.cpp
     private/sync_cli.cpp
     private/sync_cmd.cpp
+    private/sync_upstream.cpp
     private/update_cmd.cpp
     private/worktree_cmd.cpp
 )

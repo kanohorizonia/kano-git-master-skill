@@ -23,6 +23,15 @@ struct SyncCommandOptions {
         bool profile{false};
     } preCommit;
 
+    struct Upstream {
+        std::string repo{"."};
+        std::string base;
+        std::string ref;
+        std::string branch;
+        std::string patchesFile;
+        bool dryRun{false};
+    } upstream;
+
     struct OriginLatest {
         bool shell{false};
         std::string repo{"."};
@@ -90,6 +99,10 @@ auto MakeSyncCommandOptions() -> std::shared_ptr<SyncCommandOptions>;
 auto MakeSyncPreCommitCommandCallback(CLI::App& InCommand,
                                       const std::shared_ptr<SyncCommandOptions>& InOptions)
     -> std::function<void()>;
+auto MakeSyncUpstreamCommandCallback(CLI::App& InCommand,
+                                    const std::shared_ptr<SyncCommandOptions>& InOptions)
+    -> std::function<void()>;
+
 auto MakeSyncOriginLatestCommandCallback(CLI::App& InCommand,
                                          const std::shared_ptr<SyncCommandOptions>& InOptions)
     -> std::function<void()>;

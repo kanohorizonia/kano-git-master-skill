@@ -31,7 +31,7 @@ auto CountOccurrences(const std::string& InText, const std::string& InNeedle) ->
 TEST_CASE("sync registration stays behind a typed CLI boundary",
           "[architecture][sync][module-boundary][KG-TSK-0117]") {
     const auto cppRoot =
-        std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path().parent_path();
+        std::filesystem::path(KANO_GIT_TEST_REPO_ROOT) / "src" / "cpp";
     const auto moduleRoot =
         cppRoot / "code" / "systems" / "kano_git_command" / "repo_sync";
     const auto commandSource = ReadFile(moduleRoot / "private" / "sync_cmd.cpp");
@@ -50,11 +50,14 @@ TEST_CASE("sync registration stays behind a typed CLI boundary",
     REQUIRE(syncRuntime.find("new int") == std::string::npos);
     REQUIRE(cliSource.find("add_subcommand(\n        \"sync\"") != std::string::npos);
     REQUIRE(cliSource.find("const auto options = MakeSyncCommandOptions()") != std::string::npos);
-    REQUIRE(CountOccurrences(cliSource, "->callback(MakeSync") == 6);
+    REQUIRE(CountOccurrences(cliSource, "->callback(MakeSync") == 7);
     REQUIRE(cliSource.find("MakeDefaultSyncCommandCallback(*cmd, options)") != std::string::npos);
     REQUIRE(commandHeader.find("struct SyncCommandOptions") != std::string::npos);
     REQUIRE(CountOccurrences(syncRuntime, "optionsOwner = InOptions") == 7);
     REQUIRE(moduleCMake.find("private/sync_cli.cpp") != std::string::npos);
+    REQUIRE(moduleCMake.find("private/sync_upstream.cpp") != std::string::npos);
+    REQUIRE(commandHeader.find("MakeSyncUpstreamCommandCallback") != std::string::npos);
+    REQUIRE(cliSource.find("MakeSyncUpstreamCommandCallback(*upstream, options)") != std::string::npos);
 }
 
 } // namespace kano::git::tests::functional

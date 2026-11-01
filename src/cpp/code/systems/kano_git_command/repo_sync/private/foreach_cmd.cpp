@@ -200,7 +200,7 @@ void RegisterForeach(CLI::App& InApp) {
                 {},
                 *foreachCommand);
 
-            if (*foreachNativePlanOnly) {
+            if (*foreachNativePlanOnly || *foreachDryRun) {
                 std::cout << foreachPlanJson << "\n";
                 std::exit(0);
             }
@@ -233,7 +233,6 @@ void RegisterForeach(CLI::App& InApp) {
                 std::vector<RepoExecResult> results;
                 if (*foreachParallel <= 1 || repos.size() == 1) {
                     for (const auto& repo : repos) {
-                        (void)foreachDryRun;
                         results.push_back(ExecuteRepoCommand(repo, *foreachCommand));
                     }
                 } else {
