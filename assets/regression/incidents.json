@@ -25,7 +25,7 @@
         }
       ],
       "backlog_ref": "KOG-BUG-0148",
-      "change_ref": "KOG-BUG-0148",
+      "change_ref": "490414bfbb12dc88ea0be61249f143be5a75990e",
       "incident_date": "2026-11-01"
     },
     {
@@ -87,7 +87,7 @@
         }
       ],
       "backlog_ref": "KOG-TSK-0145",
-      "change_ref": "KOG-TSK-0145",
+      "change_ref": "490414bfbb12dc88ea0be61249f143be5a75990e",
       "incident_date": "2026-11-01"
     },
     {
