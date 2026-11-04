@@ -82,6 +82,29 @@ auto PathKey(const std::filesystem::path& InPath) -> std::string {
     return key;
 }
 
+// KOG-BUG-0107 r23: Windows resolves an 8.3 short path to its long form
+// whenever it hands the path back to the process.  Git therefore reports
+// the repository toplevel as "C:/Users/runneradmin/..." even when the
+// caller addressed it as "C:/Users/RUNNER~1/..." (which is exactly what
+// %TMP% is on the Windows CI runner).  Comparing the two raw strings
+// made every real repository look like a non-repository, so workspace
+// discovery silently produced an empty inventory and the production TUI
+// degraded to its root fallback.
+//
+// CanonicalPathKey resolves both sides to the same physical path before
+// comparing them.  It is only used as a Windows fallback: the plain
+// PathKey comparison stays authoritative everywhere else.
+#if defined(_WIN32)
+auto CanonicalPathKey(const std::filesystem::path& InPath) -> std::string {
+    std::error_code ec;
+    const auto canonical = std::filesystem::canonical(InPath, ec);
+    if (ec) {
+        return PathKey(InPath);
+    }
+    return PathKey(canonical);
+}
+#endif
+
 auto Trim(std::string InValue) -> std::string {
     while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
         InValue.pop_back();
@@ -714,7 +737,17 @@ auto GitExcludesPath(const std::filesystem::path& InRoot,
     const auto owner = Normalize(std::filesystem::path(Trim(topLevel.stdoutStr)));
     const auto ownerKey = PathKey(owner);
     const auto rootKey = PathKey(InRoot);
-    if (ownerKey != rootKey && !ownerKey.starts_with(rootKey + "/")) {
+    bool owned = ownerKey == rootKey || ownerKey.starts_with(rootKey + "/");
+#if defined(_WIN32)
+    if (!owned) {
+        // KOG-BUG-0107 r23: same 8.3 short-name alias as IsGitRepo().
+        const auto canonicalOwnerKey = CanonicalPathKey(owner);
+        const auto canonicalRootKey = CanonicalPathKey(InRoot);
+        owned = canonicalOwnerKey == canonicalRootKey ||
+            canonicalOwnerKey.starts_with(canonicalRootKey + "/");
+    }
+#endif
+    if (!owned) {
         return std::nullopt;
     }
 
@@ -892,7 +925,16 @@ auto IsGitRepo(const std::filesystem::path& InRepoPath) -> bool {
         return false;
     }
 
-    return PathKey(InRepoPath) == PathKey(std::filesystem::path(Trim(topLevel.stdoutStr)));
+    const auto topLevelPath = std::filesystem::path(Trim(topLevel.stdoutStr));
+    if (PathKey(InRepoPath) == PathKey(topLevelPath)) {
+        return true;
+    }
+#if defined(_WIN32)
+    // KOG-BUG-0107 r23: tolerate the Windows 8.3 short-name alias.
+    return CanonicalPathKey(InRepoPath) == CanonicalPathKey(topLevelPath);
+#else
+    return false;
+#endif
 }
 
 auto CurrentBranch(const std::filesystem::path& InRepoPath) -> std::string {
