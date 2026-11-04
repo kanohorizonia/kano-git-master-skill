@@ -96,6 +96,20 @@ auto PathKey(const std::filesystem::path& InPath) -> std::string {
 // PathKey comparison stays authoritative everywhere else.
 #if defined(_WIN32)
 auto CanonicalPathKey(const std::filesystem::path& InPath) -> std::string {
+    // GetLongPathNameW is the documented way to expand an 8.3 short path
+    // ("C:/Users/RUNNER~1/...") into its long form
+    // ("C:/Users/runneradmin/...").  It is used directly instead of
+    // std::filesystem::canonical() because the MinGW toolchain this
+    // repository builds with does not guarantee that canonical()
+    // expands the short-name alias.
+    const auto native = InPath.wstring();
+    std::wstring buffer(32768, L'\0');
+    const DWORD length = GetLongPathNameW(
+        native.c_str(), buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length > 0U && length < buffer.size()) {
+        buffer.resize(length);
+        return PathKey(std::filesystem::path(buffer));
+    }
     std::error_code ec;
     const auto canonical = std::filesystem::canonical(InPath, ec);
     if (ec) {

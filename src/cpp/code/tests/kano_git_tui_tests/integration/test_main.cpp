@@ -480,20 +480,27 @@ TEST_CASE(
             workspace),
         "commit registered repository inventory");
 
+    // KOG-BUG-0107 r24: keep the discover output attached to the
+    // assertion so a Windows inventory mismatch reports WHICH
+    // repositories were discovered instead of only the row count.
+    const auto discoverResult = RunKog(
+        {
+            "discover",
+            "--repo-root",
+            workspace.string(),
+            "--format",
+            "json",
+            "--full",
+            "--unregistered-depth",
+            "2",
+            "--no-cache",
+        },
+        workspace);
+    INFO("discover exit=" << discoverResult.exitCode);
+    INFO("discover stdout=" << discoverResult.stdoutText);
+    INFO("discover stderr=" << discoverResult.stderrText);
     RequireCommandSuccess(
-        RunKog(
-            {
-                "discover",
-                "--repo-root",
-                workspace.string(),
-                "--format",
-                "json",
-                "--full",
-                "--unregistered-depth",
-                "2",
-                "--no-cache",
-            },
-            workspace),
+        discoverResult,
         "create trusted disposable workspace manifest");
 
     std::vector<TuiStartupRepoSnapshot> rows;
@@ -543,6 +550,14 @@ TEST_CASE(
 #if !defined(_WIN32)
     CHECK_FALSE(std::filesystem::exists(fakeGitMarker));
 #endif
+    // KOG-BUG-0107 r24: report the inventory rows that were actually
+    // loaded so a mismatch names the missing repository.
+    for (const auto& row : rows) {
+        INFO("inventory row path=" << row.path.generic_string()
+             << " type=" << row.type
+             << " parent=" << row.parentPath.generic_string());
+    }
+    INFO("workspace=" << workspace.generic_string());
     REQUIRE(rows.size() == 3);
     CHECK(metadata.source == "trusted-workspace-manifest");
     CHECK(metadata.completeness == "workspace-inventory");
