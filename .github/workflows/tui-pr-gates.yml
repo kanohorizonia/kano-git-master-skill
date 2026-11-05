@@ -131,54 +131,6 @@ jobs:
         run: |
           bash scripts/ci/build-tui-pr-gate.sh "${{ matrix.configure_preset }}" "${{ matrix.build_preset }}"
 
-      - name: Diagnose audit-catalog focus cases (Windows only)
-        # KOG-BUG-0107 r25: the Windows catalog focus lane used to hang
-        # until the 1200 s suite timeout, which produced an empty
-        # audit-catalog JUnit and no indication of which case was stuck.
-        # Run every required catalog case as its own bounded invocation
-        # so the log names the case that does not finish.  This step is
-        # diagnostic only: it never gates the job.
-        if: matrix.platform == 'windows-x64'
-        continue-on-error: true
-        run: |
-          python - <<'PY'
-          import subprocess
-          import sys
-
-          binary = sys.argv[1] if len(sys.argv) > 1 else \
-              r"src/cpp/out/bin/windows-ninja-msvc/release/kano_git_commit_plan_tests.exe"
-          cases = [
-              "[KG-TSK-0135] Windows long paths publish query and revalidate through pinned catalog roots",
-              "[KG-TSK-0135] no-Git null-source fallback publishes at the workspace catalog root",
-              "[KG-TSK-0135] catalog cursor binds its immutable generation and filter",
-              "[KG-TSK-0135] catalog records pending incomplete and final lifecycle truth",
-              "[KG-TSK-0135] catalog truncated repository filter is data-less",
-              "[KG-TSK-0135] cursor expiry and unknown catalog fields fail closed without clock sleeps",
-              "[KG-TSK-0135] catalog held OS writer lock rejects publication without blocking",
-              "[KG-TSK-0135] held OS writer lock leaves Reserve nonblocking and Finalize reconciles",
-              "[KG-TSK-0135] only final catalog rows can enter pinned revalidation",
-          ]
-          for case in cases:
-              print(f"=== CASE START: {case}", flush=True)
-              try:
-                  completed = subprocess.run(
-                      [binary, '"' + case + '"', "--reporter", "console"],
-                      timeout=90, capture_output=True, text=True,
-                      stderr=subprocess.STDOUT)
-              except subprocess.TimeoutExpired as error:
-                  print(f"=== CASE TIMEOUT: {case}", flush=True)
-                  if error.stdout:
-                      print(str(error.stdout)[-4000:], flush=True)
-                  break
-              tail = (completed.stdout or "")[-4000:]
-              if tail.strip():
-                  print(tail, flush=True)
-              print(f"=== CASE EXIT {completed.returncode}: {case}", flush=True)
-              if completed.returncode != 0:
-                  print((completed.stderr or "")[-4000:], flush=True)
-                  break
-          PY
-
       - name: Run exact TUI PR focus selector and release smoke
         run: |
           catalog_args=()

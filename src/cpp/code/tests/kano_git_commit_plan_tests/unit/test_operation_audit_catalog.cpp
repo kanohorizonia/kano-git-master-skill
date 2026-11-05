@@ -9,7 +9,6 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
-#include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -152,16 +151,12 @@ auto Write(const std::filesystem::path& InPath, const std::string& InBytes) -> v
 auto Spec(const std::filesystem::path& InRoot, const std::string& InRun, const std::uint32_t InAttempt) -> OperationAuditSpec {
     std::error_code ec;
     const auto ioRoot = runtime_path::NativeIoPath(InRoot);
-    std::fprintf(stderr, "[catalog-diag] spec: create_directories begin\n"); std::fflush(stderr);
     REQUIRE((std::filesystem::create_directories(ioRoot, ec) ||
         (!ec && std::filesystem::is_directory(ioRoot))));
-    std::fprintf(stderr, "[catalog-diag] spec: create_directories end\n"); std::fflush(stderr);
     const auto source = InRoot / "plan.json";
     const auto correlation = nlohmann::json({{"mode", "koa"}, {"product_id", "product"}, {"topic_id", "topic"}, {"item_id", "item"}, {"work_order_id", "work"}, {"request_id", "request"}, {"run_id", InRun}, {"parent_run_id", "parent"}, {"producer_id", "producer"}, {"route_id", "route"}, {"attempt", InAttempt}});
     const auto bytes = nlohmann::json({{"meta", {{"plan_id", "catalog-plan"}, {"correlation", correlation}}}}).dump() + '\n';
-    std::fprintf(stderr, "[catalog-diag] spec: write begin\n"); std::fflush(stderr);
     Write(source, bytes);
-    std::fprintf(stderr, "[catalog-diag] spec: write end\n"); std::fflush(stderr);
     OperationAuditSpec spec; spec.workspaceRoot = InRoot; spec.sourcePath = source;
     spec.inputIdentity = source.generic_string(); spec.inputKind = "commit-plan"; spec.route = "commit-push.plan";
     spec.planId = "catalog-plan"; spec.sourceBytes = bytes; spec.frozenBytes = bytes; spec.frozenFileName = "frozen-plan.json";
@@ -180,15 +175,10 @@ auto NowUtc() -> std::string {
     return buffer;
 }
 void Finalize(const OperationAuditSpec& InSpec) {
-    std::fprintf(stderr, "[catalog-diag] finalize: reserve begin\n"); std::fflush(stderr);
     std::string error; auto context = OperationAuditContext::Reserve(InSpec, &error); INFO(error); REQUIRE(context);
-    std::fprintf(stderr, "[catalog-diag] finalize: reserve end\n"); std::fflush(stderr);
     const auto before = context->Capture(InSpec.workspaceRoot);
-    std::fprintf(stderr, "[catalog-diag] finalize: capture end\n"); std::fflush(stderr);
     REQUIRE(context->Append("catalog.test", InSpec.workspaceRoot, before, NowUtc(), 0, &error));
-    std::fprintf(stderr, "[catalog-diag] finalize: append end\n"); std::fflush(stderr);
     REQUIRE(context->Finalize(0, &error));
-    std::fprintf(stderr, "[catalog-diag] finalize: finalize end\n"); std::fflush(stderr);
 }
 auto CatalogRoot(const std::filesystem::path& InRoot) -> std::filesystem::path {
     return InRoot / ".kano" / "tmp" / "git" / "catalog-v1";
@@ -276,7 +266,6 @@ TEST_CASE("[KG-TSK-0135] Windows long paths publish query and revalidate through
     while (root.native().size() < 248) {
         root /= "catalog-long-path-segment-0123456789";
     }
-    std::fprintf(stderr, "[catalog-diag] longpath: deep root len=%zu\n", root.native().size()); std::fflush(stderr);
     // The deep root itself is long enough for NativeIoPath to add the
     // extended-length prefix. Remove it first, then prune the now-short empty
     // ancestor chain from baseRoot. Starting one recursive removal at the
@@ -287,32 +276,24 @@ TEST_CASE("[KG-TSK-0135] Windows long paths publish query and revalidate through
         REQUIRE(ioRoot.native().starts_with(LR"(\\?\)"));
 
         const auto spec = Spec(root, "catalog-windows-long-path", 1);
-        std::fprintf(stderr, "[catalog-diag] longpath: spec end\n"); std::fflush(stderr);
         Finalize(spec);
-        std::fprintf(stderr, "[catalog-diag] longpath: finalize end\n"); std::fflush(stderr);
         const auto query = QueryOperationAuditCatalog(spec);
-        std::fprintf(stderr, "[catalog-diag] longpath: query end\n"); std::fflush(stderr);
         INFO(query.diagnostic);
         REQUIRE(query.ready());
         REQUIRE(query.rows.size() == 1);
         REQUIRE(query.rows.front().state == OperationAuditCatalogState::Final);
 
         const auto verified = RevalidateOperationAuditCatalogEntry(spec, spec, query.rows.front());
-        std::fprintf(stderr, "[catalog-diag] longpath: revalidate end\n"); std::fflush(stderr);
         INFO(verified.diagnostic);
         REQUIRE(verified.verified());
-        std::fprintf(stderr, "[catalog-diag] longpath: verified ok\n"); std::fflush(stderr);
         REQUIRE(verified.run);
         REQUIRE(verified.run->runId == "catalog-windows-long-path");
-        std::fprintf(stderr, "[catalog-diag] longpath: requires ok\n"); std::fflush(stderr);
     }
 
     const auto longCleanupError = longCleanup.RemoveNow();
-    std::fprintf(stderr, "[catalog-diag] longpath: long cleanup end\n"); std::fflush(stderr);
     INFO(longCleanupError.message());
     REQUIRE_FALSE(longCleanupError);
     const auto baseCleanupError = baseCleanup.RemoveNow();
-    std::fprintf(stderr, "[catalog-diag] longpath: base cleanup end\n"); std::fflush(stderr);
     INFO(baseCleanupError.message());
     REQUIRE_FALSE(baseCleanupError);
 #else
@@ -323,10 +304,8 @@ TEST_CASE("[KG-TSK-0135] Windows long paths publish query and revalidate through
 TEST_CASE("[KG-TSK-0135] no-Git null-source fallback publishes at the workspace catalog root", "[audit][catalog][KG-TSK-0135]") {
     // Root() is a fresh non-Git temporary workspace. Clearing sourcePath
     // exercises the explicit workspace audit fallback without touching PATH.
-    std::fprintf(stderr, "[catalog-diag] nogit: begin\n"); std::fflush(stderr);
     const auto root = Root(); auto spec = Spec(root, "catalog-null-source", 1);
     spec.sourcePath.reset();
-    std::fprintf(stderr, "[catalog-diag] nogit: spec end\n"); std::fflush(stderr);
     std::string publicationFailure;
     AuditRunCatalogTestHooks hooks;
     hooks.publicationFailure = [&](const std::string_view diagnostic) {
@@ -334,22 +313,16 @@ TEST_CASE("[KG-TSK-0135] no-Git null-source fallback publishes at the workspace 
     };
     const ScopedCatalogTestHooks scopedHooks(std::move(hooks));
     Finalize(spec);
-    std::fprintf(stderr, "[catalog-diag] nogit: finalize end\n"); std::fflush(stderr);
     std::string error; const auto paths = ResolveOperationAuditPaths(spec, spec.correlation.runId, spec.correlation.attempt, &error);
-    std::fprintf(stderr, "[catalog-diag] nogit: paths end\n"); std::fflush(stderr);
     INFO(error); REQUIRE(paths);
     REQUIRE(paths->auditRoot == root / ".kano" / "tmp" / "git" / "audit" /
         ("plan-" + kano::git::audit::Sha256Hex(spec.inputIdentity)));
     INFO(publicationFailure);
     REQUIRE(std::filesystem::is_regular_file(CatalogRoot(root) / "current.json"));
-    std::fprintf(stderr, "[catalog-diag] nogit: current ok\n"); std::fflush(stderr);
     const auto query = QueryOperationAuditCatalog(spec);
-    std::fprintf(stderr, "[catalog-diag] nogit: query end\n"); std::fflush(stderr);
     INFO(query.diagnostic); REQUIRE(query.ready()); REQUIRE(query.rows.size() == 1);
     REQUIRE(query.rows.front().runId == "catalog-null-source");
-    std::fprintf(stderr, "[catalog-diag] nogit: requires ok\n"); std::fflush(stderr);
     std::error_code ec; RemoveTree(root, ec);
-    std::fprintf(stderr, "[catalog-diag] nogit: cleanup end\n"); std::fflush(stderr);
 }
 
 TEST_CASE("[KG-TSK-0135] source-adjacent prefix collisions remain fallback paths", "[audit][catalog][KG-TSK-0135]") {
