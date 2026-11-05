@@ -22,6 +22,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -49,18 +50,79 @@ public:
     auto operator=(const ScopedCatalogTestHooks&) -> ScopedCatalogTestHooks& = delete;
 };
 
+#if defined(_WIN32)
+// KOG-BUG-0107 r27: std::filesystem::remove_all does not terminate for a
+// "\\?\"-prefixed path under the MinGW toolchain this repository builds
+// with.  The Windows long-path catalog case therefore hung until the
+// whole suite hit its 1200 s timeout, leaving an empty JUnit report
+// and no indication of which case was stuck.
+//
+// Remove the tree with an explicit depth-first Win32 walk instead: the
+// extended-length prefix is preserved for every child, files are
+// deleted before their directories, and the walk is bounded by the
+// number of entries in the tree.
+auto RemoveTreeNative(const std::wstring& InPath) -> bool {
+    if (InPath.empty()) {
+        return true;
+    }
+    WIN32_FIND_DATAW data{};
+    const std::wstring pattern = InPath + L"\\*";
+    HANDLE find = FindFirstFileW(pattern.c_str(), &data);
+    if (find == INVALID_HANDLE_VALUE) {
+        const DWORD error = GetLastError();
+        // Nothing left to remove is a successful removal.
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
+            return true;
+        }
+        return false;
+    }
+    bool ok = true;
+    do {
+        const std::wstring name(data.cFileName);
+        if (name.empty() || name == L"." || name == L"..") {
+            continue;
+        }
+        const std::wstring child = InPath + L"\\" + name;
+        if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            if (!RemoveTreeNative(child)) {
+                ok = false;
+            }
+        } else if (DeleteFileW(child.c_str()) == FALSE) {
+            ok = false;
+        }
+    } while (FindNextFileW(find, &data) != FALSE);
+    FindClose(find);
+    if (RemoveDirectoryW(InPath.c_str()) == FALSE) {
+        ok = false;
+    }
+    return ok;
+}
+#endif
+
 class ScopedNativeTreeCleanup {
 public:
     explicit ScopedNativeTreeCleanup(std::filesystem::path InRoot)
         : mRoot(std::move(InRoot)) {}
     ~ScopedNativeTreeCleanup() {
+#if defined(_WIN32)
+        RemoveTreeNative(runtime_path::NativeIoPath(mRoot).wstring());
+#else
         std::error_code ignored;
         std::filesystem::remove_all(runtime_path::NativeIoPath(mRoot), ignored);
+#endif
     }
     auto RemoveNow() -> std::error_code {
         std::error_code error;
+#if defined(_WIN32)
+        if (!RemoveTreeNative(runtime_path::NativeIoPath(mRoot).wstring())) {
+            error = std::make_error_code(std::errc::io_error);
+        } else {
+            mRoot.clear();
+        }
+#else
         std::filesystem::remove_all(runtime_path::NativeIoPath(mRoot), error);
         if (!error) mRoot.clear();
+#endif
         return error;
     }
     ScopedNativeTreeCleanup(const ScopedNativeTreeCleanup&) = delete;
@@ -233,8 +295,10 @@ TEST_CASE("[KG-TSK-0135] Windows long paths publish query and revalidate through
         std::fprintf(stderr, "[catalog-diag] longpath: revalidate end\n"); std::fflush(stderr);
         INFO(verified.diagnostic);
         REQUIRE(verified.verified());
+        std::fprintf(stderr, "[catalog-diag] longpath: verified ok\n"); std::fflush(stderr);
         REQUIRE(verified.run);
         REQUIRE(verified.run->runId == "catalog-windows-long-path");
+        std::fprintf(stderr, "[catalog-diag] longpath: requires ok\n"); std::fflush(stderr);
     }
 
     const auto longCleanupError = longCleanup.RemoveNow();
