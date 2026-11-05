@@ -317,8 +317,10 @@ TEST_CASE("[KG-TSK-0135] Windows long paths publish query and revalidate through
 TEST_CASE("[KG-TSK-0135] no-Git null-source fallback publishes at the workspace catalog root", "[audit][catalog][KG-TSK-0135]") {
     // Root() is a fresh non-Git temporary workspace. Clearing sourcePath
     // exercises the explicit workspace audit fallback without touching PATH.
+    std::fprintf(stderr, "[catalog-diag] nogit: begin\n"); std::fflush(stderr);
     const auto root = Root(); auto spec = Spec(root, "catalog-null-source", 1);
     spec.sourcePath.reset();
+    std::fprintf(stderr, "[catalog-diag] nogit: spec end\n"); std::fflush(stderr);
     std::string publicationFailure;
     AuditRunCatalogTestHooks hooks;
     hooks.publicationFailure = [&](const std::string_view diagnostic) {
@@ -326,16 +328,21 @@ TEST_CASE("[KG-TSK-0135] no-Git null-source fallback publishes at the workspace 
     };
     const ScopedCatalogTestHooks scopedHooks(std::move(hooks));
     Finalize(spec);
+    std::fprintf(stderr, "[catalog-diag] nogit: finalize end\n"); std::fflush(stderr);
     std::string error; const auto paths = ResolveOperationAuditPaths(spec, spec.correlation.runId, spec.correlation.attempt, &error);
+    std::fprintf(stderr, "[catalog-diag] nogit: paths end\n"); std::fflush(stderr);
     INFO(error); REQUIRE(paths);
     REQUIRE(paths->auditRoot == root / ".kano" / "tmp" / "git" / "audit" /
         ("plan-" + kano::git::audit::Sha256Hex(spec.inputIdentity)));
     INFO(publicationFailure);
     REQUIRE(std::filesystem::is_regular_file(CatalogRoot(root) / "current.json"));
+    std::fprintf(stderr, "[catalog-diag] nogit: current ok\n"); std::fflush(stderr);
     const auto query = QueryOperationAuditCatalog(spec);
+    std::fprintf(stderr, "[catalog-diag] nogit: query end\n"); std::fflush(stderr);
     INFO(query.diagnostic); REQUIRE(query.ready()); REQUIRE(query.rows.size() == 1);
     REQUIRE(query.rows.front().runId == "catalog-null-source");
     std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::fprintf(stderr, "[catalog-diag] nogit: cleanup end\n"); std::fflush(stderr);
 }
 
 TEST_CASE("[KG-TSK-0135] source-adjacent prefix collisions remain fallback paths", "[audit][catalog][KG-TSK-0135]") {
