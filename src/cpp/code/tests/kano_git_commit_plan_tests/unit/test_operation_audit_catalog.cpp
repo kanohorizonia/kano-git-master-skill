@@ -99,30 +99,36 @@ auto RemoveTreeNative(const std::wstring& InPath) -> bool {
 }
 #endif
 
+// KOG-BUG-0107 r29: std::filesystem::remove_all does not reliably
+// terminate under the MinGW toolchain this repository builds with.  It
+// spun forever on the Windows long-path case (r27) and again on the
+// no-Git workspace cleanup (r28), so the Windows audit-catalog suite
+// could never finish and the whole TUI PR gate stayed red.  Use the
+// explicit, bounded native walk on Windows; keep the standard call
+// everywhere else.
+auto RemoveTree(const std::filesystem::path& InRoot, std::error_code& OutError) -> void {
+#if defined(_WIN32)
+    OutError.clear();
+    if (!RemoveTreeNative(runtime_path::NativeIoPath(InRoot).wstring())) {
+        OutError = std::make_error_code(std::errc::io_error);
+    }
+#else
+    std::filesystem::remove_all(InRoot, OutError);
+#endif
+}
+
 class ScopedNativeTreeCleanup {
 public:
     explicit ScopedNativeTreeCleanup(std::filesystem::path InRoot)
         : mRoot(std::move(InRoot)) {}
     ~ScopedNativeTreeCleanup() {
-#if defined(_WIN32)
-        RemoveTreeNative(runtime_path::NativeIoPath(mRoot).wstring());
-#else
         std::error_code ignored;
-        std::filesystem::remove_all(runtime_path::NativeIoPath(mRoot), ignored);
-#endif
+        RemoveTree(mRoot, ignored);
     }
     auto RemoveNow() -> std::error_code {
         std::error_code error;
-#if defined(_WIN32)
-        if (!RemoveTreeNative(runtime_path::NativeIoPath(mRoot).wstring())) {
-            error = std::make_error_code(std::errc::io_error);
-        } else {
-            mRoot.clear();
-        }
-#else
-        std::filesystem::remove_all(runtime_path::NativeIoPath(mRoot), error);
+        RemoveTree(mRoot, error);
         if (!error) mRoot.clear();
-#endif
         return error;
     }
     ScopedNativeTreeCleanup(const ScopedNativeTreeCleanup&) = delete;
@@ -258,7 +264,7 @@ TEST_CASE("[KG-TSK-0135] audit catalog is discoverable but requires pinned reval
     REQUIRE(query.ready()); REQUIRE(query.rows.size() == 1); REQUIRE(query.rows.front().state == OperationAuditCatalogState::Final);
     const auto verified = RevalidateOperationAuditCatalogEntry(spec, spec, query.rows.front());
     INFO(verified.diagnostic); REQUIRE(verified.verified()); REQUIRE(verified.run); REQUIRE(verified.run->runId == "catalog-run");
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] Windows long paths publish query and revalidate through pinned catalog roots",
@@ -341,7 +347,8 @@ TEST_CASE("[KG-TSK-0135] no-Git null-source fallback publishes at the workspace 
     std::fprintf(stderr, "[catalog-diag] nogit: query end\n"); std::fflush(stderr);
     INFO(query.diagnostic); REQUIRE(query.ready()); REQUIRE(query.rows.size() == 1);
     REQUIRE(query.rows.front().runId == "catalog-null-source");
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::fprintf(stderr, "[catalog-diag] nogit: requires ok\n"); std::fflush(stderr);
+    std::error_code ec; RemoveTree(root, ec);
     std::fprintf(stderr, "[catalog-diag] nogit: cleanup end\n"); std::fflush(stderr);
 }
 
@@ -373,7 +380,7 @@ TEST_CASE("[KG-TSK-0135] source-adjacent prefix collisions remain fallback paths
     REQUIRE(std::any_of(query.rows.begin(), query.rows.end(), [](const auto& row) {
         return row.runId == "catalog-prefix-operation";
     }));
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] catalog cursor binds its immutable generation and filter", "[audit][catalog][KG-TSK-0135]") {
@@ -390,7 +397,7 @@ TEST_CASE("[KG-TSK-0135] catalog cursor binds its immutable generation and filte
     OperationAuditCatalogFilter filter; filter.runId = "catalog-first";
     const auto rejected = QueryOperationAuditCatalog(first, filter, *page.cursor, limits);
     REQUIRE(rejected.code == OperationAuditCatalogQueryCode::InvalidCursor);
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] corrupt catalog pointer fails closed without rows", "[audit][catalog][KG-TSK-0135]") {
@@ -399,7 +406,7 @@ TEST_CASE("[KG-TSK-0135] corrupt catalog pointer fails closed without rows", "[a
     Write(pointer, "{not-json}\n");
     const auto result = QueryOperationAuditCatalog(spec);
     REQUIRE(result.code == OperationAuditCatalogQueryCode::Corrupt); REQUIRE(result.rows.empty()); REQUIRE_FALSE(result.cursor);
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] catalog records pending incomplete and final lifecycle truth", "[audit][catalog][KG-TSK-0135]") {
@@ -431,7 +438,7 @@ TEST_CASE("[KG-TSK-0135] catalog records pending incomplete and final lifecycle 
             row.receiptSha256 && row.outcome && row.finishedAtUtc &&
             row.repositoryIdentityHeadSha256.size() == 64;
     }));
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] catalog truncated repository filter is data-less", "[audit][catalog][KG-TSK-0135]") {
@@ -489,7 +496,7 @@ TEST_CASE("[KG-TSK-0135] catalog truncated repository filter is data-less", "[au
     bindingMismatch([](auto& value) { ++value.truncation.omittedEvidence; });
     bindingMismatch([](auto& value) { ++value.redaction.redacted; });
     bindingMismatch([](auto& value) { ++value.redaction.withheld; });
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] catalog rejects duplicate, conflicting, torn and unsupported data without a partial result", "[audit][catalog][KG-TSK-0135]") {
@@ -507,7 +514,7 @@ TEST_CASE("[KG-TSK-0135] catalog rejects duplicate, conflicting, torn and unsupp
     Write(CatalogRoot(root) / "current.json", "{\"schemaName\":\"kog.auditRunCatalogPointer\"}\n");
     result = QueryOperationAuditCatalog(spec);
     REQUIRE(result.code == OperationAuditCatalogQueryCode::Corrupt); REQUIRE(result.rows.empty());
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] cursor rejects content hash and offset tampering and returns no data", "[audit][catalog][KG-TSK-0135]") {
@@ -522,7 +529,7 @@ TEST_CASE("[KG-TSK-0135] cursor rejects content hash and offset tampering and re
     cursor = nlohmann::json::parse(*page.cursor); cursor["offset"] = 9999;
     result = QueryOperationAuditCatalog(first, {}, cursor.dump(), QueryLimits(1));
     REQUIRE(result.code == OperationAuditCatalogQueryCode::InvalidCursor); REQUIRE(result.rows.empty());
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] numeric schema and cursor fields reject overflow wrapping and fractions", "[audit][catalog][KG-TSK-0135]") {
@@ -609,7 +616,7 @@ TEST_CASE("[KG-TSK-0135] numeric schema and cursor fields reject overflow wrappi
                    std::to_string(oversizedOffset));
         requireInvalidCursor(cursor);
     }
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] cursor expiry and unknown catalog fields fail closed without clock sleeps", "[audit][catalog][KG-TSK-0135]") {
@@ -645,7 +652,7 @@ TEST_CASE("[KG-TSK-0135] cursor expiry and unknown catalog fields fail closed wi
     ReplaceCurrentCatalog(root, catalog);
     result = QueryOperationAuditCatalog(first);
     REQUIRE(result.code == OperationAuditCatalogQueryCode::Corrupt); REQUIRE(result.rows.empty()); REQUIRE_FALSE(result.cursor);
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] missing and link-like catalog pointers cannot disclose catalog rows", "[audit][catalog][KG-TSK-0135]") {
@@ -662,7 +669,7 @@ TEST_CASE("[KG-TSK-0135] missing and link-like catalog pointers cannot disclose 
     result = QueryOperationAuditCatalog(spec);
     REQUIRE(result.code == OperationAuditCatalogQueryCode::Corrupt); REQUIRE(result.rows.empty()); REQUIRE_FALSE(result.cursor);
 #endif
-    std::filesystem::remove_all(root, ec);
+    RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] selected rows bind the expected receipt identity before returning verified evidence", "[audit][catalog][KG-TSK-0135]") {
@@ -671,7 +678,7 @@ TEST_CASE("[KG-TSK-0135] selected rows bind the expected receipt identity before
     auto substituted = listed.rows.front(); substituted.receiptSha256 = std::string(64, 'a');
     const auto result = RevalidateOperationAuditCatalogEntry(spec, spec, substituted);
     REQUIRE_FALSE(result.verified()); REQUIRE_FALSE(result.run);
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] catalog selection requires matching caller supplied source bytes", "[audit][catalog][KG-TSK-0135]") {
@@ -683,7 +690,7 @@ TEST_CASE("[KG-TSK-0135] catalog selection requires matching caller supplied sou
     REQUIRE(mismatch.code == OperationAuditRunReadCode::BindingMismatch);
     const auto matching = RevalidateOperationAuditCatalogEntry(spec, spec, listed.rows.front());
     INFO(matching.diagnostic); REQUIRE(matching.verified()); REQUIRE(matching.run);
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] audit-root selector is a confined kind-bound token, never a path", "[audit][catalog][KG-TSK-0135]") {
@@ -697,7 +704,7 @@ TEST_CASE("[KG-TSK-0135] audit-root selector is a confined kind-bound token, nev
         REQUIRE(result.code == OperationAuditCatalogQueryCode::Corrupt);
         REQUIRE(result.rows.empty()); REQUIRE_FALSE(result.cursor);
     }
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] typed filters and caps have closed data-less outcomes", "[audit][catalog][KG-TSK-0135]") {
@@ -723,7 +730,7 @@ TEST_CASE("[KG-TSK-0135] typed filters and caps have closed data-less outcomes",
     limits = QueryLimits(); limits.cursorLifetime = std::chrono::minutes(10) + std::chrono::seconds(1);
     result = QueryOperationAuditCatalog(spec, {}, std::nullopt, limits);
     REQUIRE(result.code == OperationAuditCatalogQueryCode::InvalidConfiguration); REQUIRE(result.rows.empty()); REQUIRE_FALSE(result.cursor);
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] catalog complete repository absence remains empty", "[audit][catalog][KG-TSK-0135]") {
@@ -731,7 +738,7 @@ TEST_CASE("[KG-TSK-0135] catalog complete repository absence remains empty", "[a
     OperationAuditCatalogFilter filter; filter.repositoryId = "repository-not-present";
     const auto result = QueryOperationAuditCatalog(spec, filter);
     REQUIRE(result.ready()); REQUIRE(result.rows.empty()); REQUIRE_FALSE(result.cursor);
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] catalog rejects malformed nested contracts and lifecycle combinations", "[audit][catalog][KG-TSK-0135]") {
@@ -805,7 +812,7 @@ TEST_CASE("[KG-TSK-0135] catalog rejects malformed nested contracts and lifecycl
         REQUIRE(countOverflow.code == OperationAuditCatalogQueryCode::Corrupt);
         REQUIRE(countOverflow.rows.empty()); REQUIRE_FALSE(countOverflow.cursor);
     }
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] catalog byte and deadline limits honor exact boundaries without sleeps", "[audit][catalog][KG-TSK-0135]") {
@@ -838,7 +845,7 @@ TEST_CASE("[KG-TSK-0135] catalog byte and deadline limits honor exact boundaries
         const auto expiredDeadline = QueryOperationAuditCatalog(spec, {}, std::nullopt, limits);
         REQUIRE(expiredDeadline.code == OperationAuditCatalogQueryCode::Limit); REQUIRE(expiredDeadline.rows.empty()); REQUIRE_FALSE(expiredDeadline.cursor);
     }
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] catalog publication fault stages are restart-safe", "[audit][catalog][KG-TSK-0135]") {
@@ -868,7 +875,7 @@ TEST_CASE("[KG-TSK-0135] catalog publication fault stages are restart-safe", "[a
             REQUIRE(restart.code == OperationAuditCatalogQueryCode::Missing); REQUIRE(restart.rows.empty());
         }
         context.reset();
-        std::error_code ec; std::filesystem::remove_all(root, ec);
+        std::error_code ec; RemoveTree(root, ec);
     }
 }
 
@@ -886,7 +893,7 @@ TEST_CASE("[KG-TSK-0135] publisher makes exact replay idempotent and rejects rec
     const auto stillOriginal = QueryOperationAuditCatalog(spec);
     REQUIRE(stillOriginal.ready()); REQUIRE(stillOriginal.rows.size() == 1);
     REQUIRE(stillOriginal.rows.front().receiptSha256 == listed.rows.front().receiptSha256);
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] competing writers reject busy publication and caller retry retains both rows", "[audit][catalog][KG-TSK-0135]") {
@@ -901,7 +908,7 @@ TEST_CASE("[KG-TSK-0135] competing writers reject busy publication and caller re
     const auto secondRow = findRow("catalog-concurrent-second");
     std::string error; const auto firstPaths = ResolveOperationAuditPaths(first, first.correlation.runId, first.correlation.attempt, &error);
     INFO(error); REQUIRE(firstPaths);
-    std::error_code ec; std::filesystem::remove_all(CatalogRoot(root), ec); REQUIRE_FALSE(ec);
+    std::error_code ec; RemoveTree(CatalogRoot(root), ec); REQUIRE_FALSE(ec);
     REQUIRE_FALSE(std::filesystem::exists(CatalogRoot(root), ec)); REQUIRE_FALSE(ec);
 
     std::mutex mutex; std::condition_variable condition;
@@ -949,7 +956,7 @@ TEST_CASE("[KG-TSK-0135] competing writers reject busy publication and caller re
     REQUIRE(listed.ready()); REQUIRE(listed.rows.size() == 2);
     REQUIRE(std::any_of(listed.rows.begin(), listed.rows.end(), [](const auto& row) { return row.runId == "catalog-concurrent-first"; }));
     REQUIRE(std::any_of(listed.rows.begin(), listed.rows.end(), [](const auto& row) { return row.runId == "catalog-concurrent-second"; }));
-    std::filesystem::remove_all(root, ec);
+    RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] catalog held OS writer lock rejects publication without blocking", "[audit][catalog][KG-TSK-0135]") {
@@ -963,7 +970,7 @@ TEST_CASE("[KG-TSK-0135] catalog held OS writer lock rejects publication without
         REQUIRE(error == "audit catalog writer is busy");
     }
     REQUIRE(PublishOperationAuditCatalogEntry(spec, *paths, listed.rows.front(), &error));
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] held OS writer lock leaves Reserve nonblocking and Finalize reconciles", "[audit][catalog][KG-TSK-0135]") {
@@ -993,7 +1000,7 @@ TEST_CASE("[KG-TSK-0135] held OS writer lock leaves Reserve nonblocking and Fina
     });
     REQUIRE(row != listed.rows.end()); REQUIRE(row->state == OperationAuditCatalogState::Final);
     REQUIRE(row->receiptSha256); REQUIRE(row->outcome);
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] only writer repair may visit exactly the retained previous pointer", "[audit][catalog][KG-TSK-0135]") {
@@ -1032,7 +1039,7 @@ TEST_CASE("[KG-TSK-0135] only writer repair may visit exactly the retained previ
     REQUIRE(repairedCurrent != repaired.rows.end());
     REQUIRE(repairedCurrent->state == OperationAuditCatalogState::Final);
     REQUIRE(repairedCurrent->receiptSha256 == currentIt->receiptSha256);
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] only final catalog rows can enter pinned revalidation", "[audit][catalog][KG-TSK-0135]") {
@@ -1046,7 +1053,7 @@ TEST_CASE("[KG-TSK-0135] only final catalog rows can enter pinned revalidation",
     row.repositoryIdentityHeadSha256.clear();
     const auto rejected = RevalidateOperationAuditCatalogEntry(spec, spec, row);
     REQUIRE_FALSE(rejected.verified()); REQUIRE_FALSE(rejected.run);
-    std::error_code ec; std::filesystem::remove_all(root, ec);
+    std::error_code ec; RemoveTree(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] catalog rejects FIFOs as well as symlinks", "[audit][catalog][KG-TSK-0135]") {
@@ -1057,7 +1064,7 @@ TEST_CASE("[KG-TSK-0135] catalog rejects FIFOs as well as symlinks", "[audit][ca
     REQUIRE(::mkfifo(pointer.c_str(), 0600) == 0);
     const auto result = QueryOperationAuditCatalog(spec);
     REQUIRE(result.code == OperationAuditCatalogQueryCode::Corrupt); REQUIRE(result.rows.empty()); REQUIRE_FALSE(result.cursor);
-    std::filesystem::remove_all(root, ec);
+    RemoveTree(root, ec);
 #else
     SUCCEED("Windows reparse-point coverage is exercised by the platform path tests.");
 #endif
